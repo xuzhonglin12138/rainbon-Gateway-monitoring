@@ -1,0 +1,50 @@
+# RBDPlugin CRD resource for this plugin.
+# Apply this after the plugin is deployed.
+#
+# The FrontedPath tells rbd-api where to fetch main.js from.
+# Adjust the namespace and service name to match your deployment.
+apiVersion: rainbond.io/v1alpha1
+kind: RBDPlugin
+metadata:
+  name: rainbond-plugin-template
+  labels:
+    plugin.rainbond.io/enable: "true"
+spec:
+  display_name: "Plugin Template"
+  description: "Rainbond plugin template for development"
+  plugin_type: JSInject
+  version: "1.0.0"
+  # rbd-api will fetch main.js from this address
+  fronted_path: "http://plugin-template.team-xxx.svc:8080/static/main.js"
+---
+# RBAC: allow the plugin pod to read the license ConfigMap
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rainbond-plugin-template
+  namespace: rbd-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rainbond-plugin-template
+  namespace: rbd-system
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["rbd-license-info"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rainbond-plugin-template
+  namespace: rbd-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rainbond-plugin-template
+subjects:
+- kind: ServiceAccount
+  name: rainbond-plugin-template
+  namespace: rbd-system

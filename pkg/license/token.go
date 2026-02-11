@@ -35,23 +35,6 @@ type LicenseToken struct {
 	Signature      string   `json:"signature"`
 }
 
-// licenseTokenForSigning excludes the Signature field for verification.
-type licenseTokenForSigning struct {
-	Code           string   `json:"code"`
-	ClusterID      string   `json:"cluster_id"`
-	Company        string   `json:"company"`
-	Contact        string   `json:"contact"`
-	Tier           string   `json:"tier"`
-	AllowedPlugins []string `json:"allowed_plugins"`
-	StartAt        int64    `json:"start_at"`
-	ExpireAt       int64    `json:"expire_at"`
-	SubscribeUntil int64    `json:"subscribe_until"`
-	ClusterLimit   int      `json:"cluster_limit"`
-	NodeLimit      int      `json:"node_limit"`
-	MemoryLimit    int64    `json:"memory_limit"`
-	CPULimit       int64    `json:"cpu_limit"`
-}
-
 // ParseLicenseToken parses a JSON-encoded license token.
 func ParseLicenseToken(data []byte) (*LicenseToken, error) {
 	var token LicenseToken
@@ -61,24 +44,13 @@ func ParseLicenseToken(data []byte) (*LicenseToken, error) {
 	return &token, nil
 }
 
-// SerializeForSigning returns the JSON bytes without the signature field.
+// SerializeForSigning returns the JSON bytes for signature verification.
+// It sets Signature to empty string and marshals the full struct,
+// matching the license generation tool's signingPayload() approach.
 func (t *LicenseToken) SerializeForSigning() ([]byte, error) {
-	data := licenseTokenForSigning{
-		Code:           t.Code,
-		ClusterID:      t.ClusterID,
-		Company:        t.Company,
-		Contact:        t.Contact,
-		Tier:           t.Tier,
-		AllowedPlugins: t.AllowedPlugins,
-		StartAt:        t.StartAt,
-		ExpireAt:       t.ExpireAt,
-		SubscribeUntil: t.SubscribeUntil,
-		ClusterLimit:   t.ClusterLimit,
-		NodeLimit:      t.NodeLimit,
-		MemoryLimit:    t.MemoryLimit,
-		CPULimit:       t.CPULimit,
-	}
-	return json.Marshal(data)
+	copy := *t
+	copy.Signature = ""
+	return json.Marshal(copy)
 }
 
 // Verify verifies the RSA-SHA256 signature using the given public key.

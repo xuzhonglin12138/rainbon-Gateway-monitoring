@@ -20,6 +20,7 @@ var (
 // LicenseToken represents the Rainbond enterprise license.
 type LicenseToken struct {
 	Code           string   `json:"code"`
+	EnterpriseID   string   `json:"enterprise_id"`
 	ClusterID      string   `json:"cluster_id"`
 	Company        string   `json:"company"`
 	Contact        string   `json:"contact"`

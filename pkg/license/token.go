@@ -33,6 +33,7 @@ type LicenseToken struct {
 	NodeLimit      int      `json:"node_limit"`
 	MemoryLimit    int64    `json:"memory_limit"`
 	CPULimit       int64    `json:"cpu_limit"`
+	AccessKey      string   `json:"access_key"`
 	Signature      string   `json:"signature"`
 }
 

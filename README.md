@@ -79,7 +79,7 @@ kubectl apply -f deploy/rbdplugin.yaml
 ```
 启动 → 读 ConfigMap rbd-system/rbd-license-info
      → RSA 公钥验签
-     → 检查 allowed_plugins 包含本插件
+     → 检查 plugin_mapping 包含本插件
      → 检查有效期
      → 通过：正常提供 main.js
      → 失败：返回 403，等待下次重验

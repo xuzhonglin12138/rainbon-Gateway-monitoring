@@ -25,8 +25,8 @@ type LicenseToken struct {
 	Company        string   `json:"company"`
 	Contact        string   `json:"contact"`
 	Tier           string   `json:"tier"`
-	AllowedPlugins []string `json:"allowed_plugins"`
-	StartAt        int64    `json:"start_at"`
+	PluginMapping  map[string]string `json:"plugin_mapping"`
+	StartAt        int64             `json:"start_at"`
 	ExpireAt       int64    `json:"expire_at"`
 	SubscribeUntil int64    `json:"subscribe_until"`
 	ClusterLimit   int      `json:"cluster_limit"`
@@ -77,14 +77,10 @@ func (t *LicenseToken) IsExpired() bool {
 	return time.Now().Unix() > t.ExpireAt
 }
 
-// IsPluginAllowed returns true if the given plugin ID is in the allowed list.
+// IsPluginAllowed returns true if the given plugin ID is in the plugin mapping.
 func (t *LicenseToken) IsPluginAllowed(pluginID string) bool {
-	for _, p := range t.AllowedPlugins {
-		if p == "*" || p == pluginID {
-			return true
-		}
-	}
-	return false
+	_, ok := t.PluginMapping[pluginID]
+	return ok
 }
 
 // DecodePublicKeyFromPEM decodes an RSA public key from PEM-encoded bytes.

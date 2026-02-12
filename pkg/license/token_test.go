@@ -48,18 +48,18 @@ func TestLicenseToken_Verify(t *testing.T) {
 	privKey, pubKey := generateTestKeyPair(t)
 
 	token := &LicenseToken{
-		Code:           "TEST-001",
-		ClusterID:      "test-cluster-id",
-		Company:        "Test Company",
-		Tier:           "advanced",
-		AllowedPlugins: []string{"*"},
-		StartAt:        time.Now().Add(-1 * time.Hour).Unix(),
-		ExpireAt:       time.Now().Add(24 * time.Hour).Unix(),
+		Code:          "TEST-001",
+		ClusterID:     "test-cluster-id",
+		Company:       "Test Company",
+		Tier:          "advanced",
+		PluginMapping: map[string]string{"plugin-a": "app-key-a"},
+		StartAt:       time.Now().Add(-1 * time.Hour).Unix(),
+		ExpireAt:      time.Now().Add(24 * time.Hour).Unix(),
 		SubscribeUntil: time.Now().Add(30 * 24 * time.Hour).Unix(),
-		ClusterLimit:   -1,
-		NodeLimit:      -1,
-		MemoryLimit:    -1,
-		CPULimit:       -1,
+		ClusterLimit:  -1,
+		NodeLimit:     -1,
+		MemoryLimit:   -1,
+		CPULimit:      -1,
 	}
 	signTestToken(t, token, privKey)
 
@@ -76,16 +76,16 @@ func TestLicenseToken_Verify_Tampered(t *testing.T) {
 	privKey, pubKey := generateTestKeyPair(t)
 
 	token := &LicenseToken{
-		Code:           "TEST-001",
-		ClusterID:      "test-cluster-id",
-		Tier:           "advanced",
-		AllowedPlugins: []string{"*"},
-		StartAt:        time.Now().Add(-1 * time.Hour).Unix(),
-		ExpireAt:       time.Now().Add(24 * time.Hour).Unix(),
-		ClusterLimit:   -1,
-		NodeLimit:      -1,
-		MemoryLimit:    -1,
-		CPULimit:       -1,
+		Code:          "TEST-001",
+		ClusterID:     "test-cluster-id",
+		Tier:          "advanced",
+		PluginMapping: map[string]string{"plugin-a": "app-key-a"},
+		StartAt:       time.Now().Add(-1 * time.Hour).Unix(),
+		ExpireAt:      time.Now().Add(24 * time.Hour).Unix(),
+		ClusterLimit:  -1,
+		NodeLimit:     -1,
+		MemoryLimit:   -1,
+		CPULimit:      -1,
 	}
 	signTestToken(t, token, privKey)
 
@@ -114,18 +114,13 @@ func TestLicenseToken_IsExpired(t *testing.T) {
 }
 
 func TestLicenseToken_IsPluginAllowed(t *testing.T) {
-	token := &LicenseToken{AllowedPlugins: []string{"plugin-a", "plugin-b"}}
+	token := &LicenseToken{PluginMapping: map[string]string{"plugin-a": "key-a", "plugin-b": "key-b"}}
 
 	if !token.IsPluginAllowed("plugin-a") {
 		t.Fatal("expected plugin-a to be allowed")
 	}
 	if token.IsPluginAllowed("plugin-c") {
 		t.Fatal("expected plugin-c to not be allowed")
-	}
-
-	token.AllowedPlugins = []string{"*"}
-	if !token.IsPluginAllowed("any-plugin") {
-		t.Fatal("expected wildcard to allow any plugin")
 	}
 }
 

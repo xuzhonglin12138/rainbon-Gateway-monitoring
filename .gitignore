@@ -1,5 +1,4 @@
 bin/
 keys/
-*.pem
 .idea/
 .vscode/

@@ -26,6 +26,7 @@ type LicenseToken struct {
 	Contact        string   `json:"contact"`
 	Tier           string   `json:"tier"`
 	PluginMapping  map[string]string `json:"plugin_mapping"`
+	PluginNames    map[string]string `json:"plugin_names"`
 	StartAt        int64             `json:"start_at"`
 	ExpireAt       int64    `json:"expire_at"`
 	SubscribeUntil int64    `json:"subscribe_until"`

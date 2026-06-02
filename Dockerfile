@@ -1,5 +1,5 @@
 # Build stage
-FROM docker.1ms.run/library/golang:1.24-alpine AS builder
+FROM docker.1ms.run/golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /bin/plugin ./cmd/plugin
 
 # Final stage
-FROM docker.1ms.run/library/alpine:3.19
+FROM docker.1ms.run/alpine:3.19
 
 RUN apk add --no-cache ca-certificates tzdata
 

@@ -3,10 +3,11 @@ FROM m.daocloud.io/docker.io/library/golang:1.24-alpine AS builder
 
 WORKDIR /app
 
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
 RUN apk add --no-cache git ca-certificates
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY=https://goproxy.cn,direct go mod download
 
 COPY . .
 
@@ -19,6 +20,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Final stage
 FROM m.daocloud.io/docker.io/library/alpine:3.19
 
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
 RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app

@@ -6,12 +6,20 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	promclient "github.com/goodrain/rainbond-plugin-template/pkg/clients/prometheus"
+	"github.com/goodrain/rainbond-plugin-template/pkg/gateway"
+	"github.com/goodrain/rainbond-plugin-template/pkg/jobs"
 	"github.com/goodrain/rainbond-plugin-template/pkg/license"
+	"github.com/goodrain/rainbond-plugin-template/pkg/repository"
 	"github.com/goodrain/rainbond-plugin-template/pkg/server"
+	"github.com/goodrain/rainbond-plugin-template/pkg/service"
 	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -78,6 +86,10 @@ func main() {
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to create Kubernetes client")
 	}
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to create Kubernetes dynamic client")
+	}
 
 	// License checker
 	checker := license.NewChecker(license.CheckerConfig{
@@ -108,12 +120,86 @@ func main() {
 	// Start periodic re-check
 	checker.StartPeriodicCheck(ctx, time.Duration(RecheckInterval)*time.Minute)
 
+	redisClient := repository.NewRedisClient(repository.RedisClientConfig{
+		Addr:     envOrDefault("NM_REDIS_ADDR", "127.0.0.1:6379"),
+		Password: os.Getenv("NM_REDIS_PASSWORD"),
+		DB:       envInt("NM_REDIS_DB", 0),
+		Timeout:  time.Duration(envInt("NM_REDIS_TIMEOUT_SECONDS", 3)) * time.Second,
+		TLS:      envBool("NM_REDIS_TLS", false),
+	})
+	redisStore := repository.NewRedisStore(redisClient)
+	prometheusClient := promclient.NewClient(promclient.Config{
+		BaseURL: envOrDefault("NM_PROMETHEUS_URL", "http://127.0.0.1:9999"),
+		Timeout: time.Duration(envInt("NM_PROMETHEUS_TIMEOUT_SECONDS", 3)) * time.Second,
+	})
+	slaService := service.NewSLAService(service.SLAConfig{
+		Prometheus: prometheusClient,
+		Store:      redisStore,
+		Target:     envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
+	})
+	overviewService := service.NewOverviewService(service.OverviewConfig{
+		Prometheus: prometheusClient,
+		Store:      redisStore,
+	})
+	collector := service.NewInternalRouteCollector(service.CollectorConfig{
+		Store:           redisStore,
+		Mapper:          redisStore,
+		RouteGroupRules: redisStore,
+		RouteGroups: service.NewRouteGroupResolver(service.RouteGroupConfig{
+			MaxGroupsPerScope: envInt("NM_ROUTE_GROUP_LIMIT", 100),
+			TemplateRules: []service.RouteGroupRule{
+				{Prefix: "/api/user/setting/", Group: "/api/user/setting/*"},
+				{Prefix: "/api/order/detail/", Group: "/api/order/detail/*"},
+			},
+		}),
+	})
+	snapshotJob := jobs.SnapshotJob{
+		Store:    redisStore,
+		Interval: time.Duration(envInt("NM_SNAPSHOT_REFRESH_SECONDS", 5)) * time.Second,
+		Logger:   logger,
+	}
+	snapshotJob.Start(ctx)
+
+	routeClient := gateway.NewDynamicRouteClient(dynamicClient)
+	httpLoggerConfig := gateway.HTTPLoggerConfig{
+		URI:       envOrDefault("NM_COLLECTOR_URI", "http://network-monitor-plugin"+CollectorPath),
+		Timeout:   envInt("NM_HTTP_LOGGER_TIMEOUT_SECONDS", DefaultHTTPLoggerTimeout),
+		SSLVerify: envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
+	}
+	httpLoggerSyncer := gateway.HTTPLoggerSyncer{
+		Client:       routeClient,
+		MappingStore: redisStore,
+		Config:       httpLoggerConfig,
+		Logger:       logger,
+	}
+
+	namespaces := splitCSV(os.Getenv("NM_APISIX_NAMESPACES"))
+	if len(namespaces) > 0 {
+		logger.WithField("namespaces", namespaces).Info("Starting APISIX route-level http-logger attach job")
+		job := &gateway.HTTPLoggerAttachJob{
+			Client:       routeClient,
+			MappingStore: redisStore,
+			Namespaces:   namespaces,
+			Config:       httpLoggerConfig,
+			Interval:     time.Duration(envInt("NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS", 60)) * time.Second,
+			Logger:       logger,
+		}
+		job.Start(ctx)
+	}
+
 	// HTTP server
 	srv := server.New(server.Config{
-		Addr:     *addr,
-		Checker:  checker,
-		StaticFS: staticFiles,
-		Logger:   logger,
+		Addr:             *addr,
+		Checker:          checker,
+		StaticFS:         staticFiles,
+		Logger:           logger,
+		Collector:        collector,
+		QueryStore:       redisStore,
+		SLAService:       slaService,
+		OverviewService:  overviewService,
+		ConfigStore:      redisStore,
+		DefaultSLATarget: envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
+		HTTPLoggerSyncer: httpLoggerSyncer,
 	})
 
 	go func() {
@@ -141,4 +227,62 @@ func main() {
 	}
 	cancel()
 	logger.Info("Plugin stopped")
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envBool(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envFloat(key string, fallback float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func splitCSV(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }

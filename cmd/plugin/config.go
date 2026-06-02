@@ -20,4 +20,10 @@ const (
 
 	// RecheckInterval is how often to re-verify the license (in minutes).
 	RecheckInterval = 60
+
+	// CollectorPath is the APISIX http-logger target path exposed by this plugin.
+	CollectorPath = "/api/v1/collector/apisix/logs"
+
+	// DefaultHTTPLoggerTimeout is the APISIX http-logger request timeout in seconds.
+	DefaultHTTPLoggerTimeout = 3
 )

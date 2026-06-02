@@ -1,33 +1,37 @@
 # RBDPlugin CRD resource for this plugin.
 # Apply this after the plugin is deployed.
 #
-# The FrontedPath tells rbd-api where to fetch main.js from.
+# metadata.name is the pluginName used by:
+# /console/regions/{region}/backend/plugins/{pluginName}/...
 # Adjust the namespace and service name to match your deployment.
 apiVersion: rainbond.io/v1alpha1
 kind: RBDPlugin
 metadata:
-  name: rainbond-plugin-template
+  name: rainbond-gateway-monitoring
   labels:
     plugin.rainbond.io/enable: "true"
 spec:
-  display_name: "Plugin Template"
-  description: "Rainbond plugin template for development"
+  display_name: "Rainbond Gateway Monitoring"
+  description: "Rainbond APISIX gateway and internal route monitoring plugin"
   plugin_type: JSInject
   version: "1.0.0"
-  # rbd-api will fetch main.js from this address
-  fronted_path: "http://plugin-template.team-xxx.svc:8080/static/main.js"
+  # rbd-api PluginStaticProxy fetches /static/main.js from this service.
+  frontend_service: "http://rainbond-gateway-monitoring.rbd-system.svc:8080"
+  # rbd-api PluginBackendProxy forwards /api/v1/* to this service.
+  backend_service: "http://rainbond-gateway-monitoring.rbd-system.svc:8080"
 ---
-# RBAC: allow the plugin pod to read the license ConfigMap
+# RBAC: allow the plugin pod to read the license ConfigMap and manage
+# Rainbond-owned APISIX Routes across team namespaces.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: rainbond-plugin-template
+  name: rainbond-gateway-monitoring
   namespace: rbd-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: rainbond-plugin-template
+  name: rainbond-gateway-monitoring-license
   namespace: rbd-system
 rules:
 - apiGroups: [""]
@@ -38,13 +42,38 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: rainbond-plugin-template
+  name: rainbond-gateway-monitoring-license
   namespace: rbd-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: rainbond-plugin-template
+  name: rainbond-gateway-monitoring-license
 subjects:
 - kind: ServiceAccount
-  name: rainbond-plugin-template
+  name: rainbond-gateway-monitoring
+  namespace: rbd-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rainbond-gateway-monitoring-apisix
+rules:
+- apiGroups: ["apisix.apache.org"]
+  resources: ["apisixroutes"]
+  verbs: ["get", "list", "update"]
+- apiGroups: ["apisix.apache.org"]
+  resources: ["apisixupstreams", "apisixtlses"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rainbond-gateway-monitoring-apisix
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rainbond-gateway-monitoring-apisix
+subjects:
+- kind: ServiceAccount
+  name: rainbond-gateway-monitoring
   namespace: rbd-system

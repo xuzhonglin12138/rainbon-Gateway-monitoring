@@ -162,7 +162,7 @@ func main() {
 
 	routeClient := gateway.NewDynamicRouteClient(dynamicClient)
 	httpLoggerConfig := gateway.HTTPLoggerConfig{
-		URI:       envOrDefault("NM_COLLECTOR_URI", "http://network-monitor-plugin"+CollectorPath),
+		URI:       envOrDefault("NM_COLLECTOR_URI", DefaultCollectorURI),
 		Timeout:   envInt("NM_HTTP_LOGGER_TIMEOUT_SECONDS", DefaultHTTPLoggerTimeout),
 		SSLVerify: envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
 	}

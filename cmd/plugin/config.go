@@ -4,7 +4,7 @@ package main
 const (
 	// PluginID is the unique identifier for this plugin.
 	// Must match the plugin_id in plugin_manifest.
-	PluginID = "rainbond-plugin-template"
+	PluginID = "rainbond-gateway-monitoring"
 
 	// DefaultAddr is the default HTTP listen address.
 	DefaultAddr = ":8080"
@@ -23,6 +23,9 @@ const (
 
 	// CollectorPath is the APISIX http-logger target path exposed by this plugin.
 	CollectorPath = "/api/v1/collector/apisix/logs"
+
+	// DefaultCollectorURI is the APISIX http-logger target URI for in-cluster access.
+	DefaultCollectorURI = "http://rainbond-gateway-monitoring" + CollectorPath
 
 	// DefaultHTTPLoggerTimeout is the APISIX http-logger request timeout in seconds.
 	DefaultHTTPLoggerTimeout = 3

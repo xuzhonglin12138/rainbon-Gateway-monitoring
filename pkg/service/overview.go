@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	promclient "github.com/goodrain/rainbond-plugin-template/pkg/clients/prometheus"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
@@ -14,6 +15,7 @@ import (
 type OverviewConfig struct {
 	Prometheus PrometheusQueryClient
 	Store      routeIndexStore
+	Now        func() time.Time
 }
 
 type routeIndexStore interface {
@@ -23,15 +25,20 @@ type routeIndexStore interface {
 type OverviewService struct {
 	prometheus PrometheusQueryClient
 	store      routeIndexStore
+	now        func() time.Time
 }
 
 type PrometheusQueryClient interface {
 	QueryScalar(ctx context.Context, query string) (float64, error)
 	QueryInstant(ctx context.Context, query string) ([]promclient.Sample, error)
+	QueryRange(ctx context.Context, query string, start, end int64, stepSeconds int) ([]promclient.RangeSample, error)
 }
 
 func NewOverviewService(cfg OverviewConfig) *OverviewService {
-	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, now: cfg.Now}
 }
 
 func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error) {
@@ -39,15 +46,9 @@ func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.
 }
 
 func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error) {
-	routeMatcher := regexp.QuoteMeta(appID) + ".*"
-	if s.store != nil {
-		routes, err := s.store.GetAppPrometheusRoutes(ctx, appID)
-		if err != nil {
-			return model.Overview{}, err
-		}
-		if len(routes) > 0 {
-			routeMatcher = prometheusRouteMatcher(routes)
-		}
+	routeMatcher, err := s.appRouteMatcher(ctx, appID)
+	if err != nil {
+		return model.Overview{}, err
 	}
 	return s.gatewayOverview(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, routeMatcher, window)
 }
@@ -55,6 +56,10 @@ func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, wind
 func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error) {
 	if s.prometheus == nil {
 		return model.Overview{}, fmt.Errorf("prometheus client is required")
+	}
+	requests, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(increase(app_request{service_id="%s",method="total"}[%s]))`, componentID, window))
+	if err != nil {
+		return model.Overview{}, err
 	}
 	throughput, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(app_request{service_id="%s",method="total"}[%s]))`, componentID, window))
 	if err != nil {
@@ -75,11 +80,69 @@ func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID 
 	return model.Overview{
 		Scope:               model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
 		Window:              window,
+		RequestCount:        requests,
+		EgressBytesPerSec:   transmit,
 		ThroughputPerSecond: throughput,
 		AvgLatencyMs:        latency,
 		NetworkReceiveBps:   receive,
 		NetworkTransmitBps:  transmit,
 		EvidenceLevel:       "A",
+	}, nil
+}
+
+func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context) (model.OverviewTrend, error) {
+	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "")
+}
+
+func (s *OverviewService) GetAppRealtimeTrend(ctx context.Context, appID string) (model.OverviewTrend, error) {
+	routeMatcher, err := s.appRouteMatcher(ctx, appID)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, routeMatcher)
+}
+
+func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, componentID string) (model.OverviewTrend, error) {
+	if s.prometheus == nil {
+		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
+	}
+	end := s.now().Unix()
+	start := end - int64(5*time.Minute/time.Second)
+	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(app_request{service_id="%s",method="total"}[1m]))`, componentID), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	latencies, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`avg(app_requesttime{service_id="%s",mode="avg"})`, componentID), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	receive, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(container_network_receive_bytes_total{service_id="%s"}[1m]))`, componentID), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	transmit, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(container_network_transmit_bytes_total{service_id="%s"}[1m]))`, componentID), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+
+	requestValues := rangeValuesByTimestamp(requests)
+	latencyValues := rangeValuesByTimestamp(latencies)
+	receiveValues := rangeValuesByTimestamp(receive)
+	transmitValues := rangeValuesByTimestamp(transmit)
+	timestamps := sortedTimestamps(requestValues, latencyValues, receiveValues, transmitValues)
+	points := make([]model.OverviewTrendPoint, 0, len(timestamps))
+	for _, timestamp := range timestamps {
+		points = append(points, model.OverviewTrendPoint{
+			Timestamp:         timestamp,
+			RequestPerSecond:  requestValues[timestamp],
+			AvgLatencyMs:      latencyValues[timestamp],
+			EgressBytesPerSec: transmitValues[timestamp] + receiveValues[timestamp],
+		})
+	}
+	return model.OverviewTrend{
+		Scope:  model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
+		Window: model.Window5m,
+		Points: points,
 	}, nil
 }
 
@@ -189,18 +252,11 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	if s.prometheus == nil {
 		return model.Overview{}, fmt.Errorf("prometheus client is required")
 	}
-	selector := ""
-	if routeMatcher != "" {
-		selector = fmt.Sprintf(`{route=~"%s"}`, routeMatcher)
-	}
-	selectorWithCode := `{code=~"5.."}`
-	if routeMatcher != "" {
-		selectorWithCode = fmt.Sprintf(`{route=~"%s",code=~"5.."}`, routeMatcher)
-	}
-	egressSelector := `{type="egress"}`
-	if routeMatcher != "" {
-		egressSelector = fmt.Sprintf(`{route=~"%s",type="egress"}`, routeMatcher)
-	}
+	routeLabel := prometheusRouteLabel(routeMatcher)
+	selector := metricSelector(routeLabel)
+	selectorWithCode := metricSelector(routeLabel, `code=~"5.."`)
+	latencySelector := metricSelector(routeLabel, `type="upstream"`)
+	egressSelector := metricSelector(routeLabel, `type="egress"`)
 	total, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(increase(apisix_http_status%s[%s]))`, selector, window))
 	if err != nil {
 		return model.Overview{}, err
@@ -209,11 +265,11 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	if err != nil {
 		return model.Overview{}, err
 	}
-	latencySum, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[%s]))`, selector, window))
+	latencySum, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[%s]))`, latencySelector, window))
 	if err != nil {
 		return model.Overview{}, err
 	}
-	latencyCount, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_count%s[%s]))`, selector, window))
+	latencyCount, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_count%s[%s]))`, latencySelector, window))
 	if err != nil {
 		return model.Overview{}, err
 	}
@@ -227,7 +283,7 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	}
 	latency := 0.0
 	if latencyCount > 0 {
-		latency = latencySum / latencyCount * 1000
+		latency = latencySum / latencyCount
 	}
 	return model.Overview{
 		Scope:             scope,
@@ -239,6 +295,119 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 		EgressBytesPerSec: egress,
 		EvidenceLevel:     "A",
 	}, nil
+}
+
+func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.AggregateScope, routeMatcher string) (model.OverviewTrend, error) {
+	if s.prometheus == nil {
+		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
+	}
+	end := s.now().Unix()
+	start := end - int64(5*time.Minute/time.Second)
+	routeLabel := prometheusRouteLabel(routeMatcher)
+	selector := metricSelector(routeLabel)
+	selectorWithCode := metricSelector(routeLabel, `code=~"5.."`)
+	latencySelector := metricSelector(routeLabel, `type="upstream"`)
+	egressSelector := metricSelector(routeLabel, `type="egress"`)
+
+	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_status%s[1m]))`, selector), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	errors, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_status%s[1m]))`, selectorWithCode), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	latencies, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[1m])) / sum(rate(apisix_http_latency_count%s[1m]))`, latencySelector, latencySelector), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	egress, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_bandwidth%s[1m]))`, egressSelector), start, end, 30)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+
+	requestValues := rangeValuesByTimestamp(requests)
+	errorValues := rangeValuesByTimestamp(errors)
+	latencyValues := rangeValuesByTimestamp(latencies)
+	egressValues := rangeValuesByTimestamp(egress)
+	timestamps := sortedTimestamps(requestValues, errorValues, latencyValues, egressValues)
+	points := make([]model.OverviewTrendPoint, 0, len(timestamps))
+	for _, timestamp := range timestamps {
+		errorRate := 0.0
+		if requestValues[timestamp] > 0 {
+			errorRate = errorValues[timestamp] / requestValues[timestamp]
+		}
+		points = append(points, model.OverviewTrendPoint{
+			Timestamp:         timestamp,
+			RequestPerSecond:  requestValues[timestamp],
+			ErrorRate:         errorRate,
+			AvgLatencyMs:      latencyValues[timestamp],
+			EgressBytesPerSec: egressValues[timestamp],
+		})
+	}
+	return model.OverviewTrend{Scope: scope, Window: model.Window5m, Points: points}, nil
+}
+
+func (s *OverviewService) appRouteMatcher(ctx context.Context, appID string) (string, error) {
+	routeMatcher := regexp.QuoteMeta(appID) + ".*"
+	if s.store == nil {
+		return routeMatcher, nil
+	}
+	routes, err := s.store.GetAppPrometheusRoutes(ctx, appID)
+	if err != nil {
+		return "", err
+	}
+	if len(routes) > 0 {
+		routeMatcher = prometheusRouteMatcher(routes)
+	}
+	return routeMatcher, nil
+}
+
+func prometheusRouteLabel(routeMatcher string) string {
+	if routeMatcher == "" {
+		return ""
+	}
+	return fmt.Sprintf(`route=~"%s"`, routeMatcher)
+}
+
+func metricSelector(labels ...string) string {
+	filtered := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label != "" {
+			filtered = append(filtered, label)
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return "{" + strings.Join(filtered, ",") + "}"
+}
+
+func rangeValuesByTimestamp(samples []promclient.RangeSample) map[int64]float64 {
+	values := map[int64]float64{}
+	for _, sample := range samples {
+		for _, point := range sample.Values {
+			values[point.Timestamp] += point.Value
+		}
+	}
+	return values
+}
+
+func sortedTimestamps(series ...map[int64]float64) []int64 {
+	seen := map[int64]struct{}{}
+	for _, values := range series {
+		for timestamp := range values {
+			seen[timestamp] = struct{}{}
+		}
+	}
+	timestamps := make([]int64, 0, len(seen))
+	for timestamp := range seen {
+		timestamps = append(timestamps, timestamp)
+	}
+	sort.Slice(timestamps, func(i, j int) bool {
+		return timestamps[i] < timestamps[j]
+	})
+	return timestamps
 }
 
 func nodeNameFromSample(sample promclient.Sample) string {

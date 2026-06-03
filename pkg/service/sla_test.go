@@ -12,6 +12,7 @@ import (
 type fakePrometheusClient struct {
 	values  map[string]float64
 	vectors map[string][]promclient.Sample
+	ranges  map[string][]promclient.RangeSample
 	queries []string
 }
 
@@ -23,6 +24,11 @@ func (f *fakePrometheusClient) QueryScalar(ctx context.Context, query string) (f
 func (f *fakePrometheusClient) QueryInstant(ctx context.Context, query string) ([]promclient.Sample, error) {
 	f.queries = append(f.queries, query)
 	return f.vectors[query], nil
+}
+
+func (f *fakePrometheusClient) QueryRange(ctx context.Context, query string, start, end int64, stepSeconds int) ([]promclient.RangeSample, error) {
+	f.queries = append(f.queries, query)
+	return f.ranges[query], nil
 }
 
 type fakeSLAStore struct {

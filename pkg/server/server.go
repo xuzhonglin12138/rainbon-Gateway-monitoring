@@ -68,6 +68,9 @@ type OverviewService interface {
 	GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error)
 	GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error)
 	GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error)
+	GetPlatformRealtimeTrend(ctx context.Context) (model.OverviewTrend, error)
+	GetAppRealtimeTrend(ctx context.Context, appID string) (model.OverviewTrend, error)
+	GetComponentRealtimeTrend(ctx context.Context, componentID string) (model.OverviewTrend, error)
 	GetPlatformNodeSummaries(ctx context.Context, window model.Window) ([]model.PlatformNodeSummary, error)
 	GetPlatformNodeDetail(ctx context.Context, nodeName string, window model.Window) (model.PlatformNodeDetail, error)
 }
@@ -116,6 +119,7 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("/api/v1/platform/internal-routes/top-latency", s.handlePlatformTopLatency)
 	mux.HandleFunc("/api/v1/platform/nodes/", s.handlePlatformNodeRoutes)
 	mux.HandleFunc("/api/v1/platform/nodes/summary", s.handlePlatformNodeSummary)
+	mux.HandleFunc("/api/v1/platform/overview/trend", s.handlePlatformOverviewTrend)
 	mux.HandleFunc("/api/v1/platform/overview", s.handlePlatformOverview)
 	mux.HandleFunc("/api/v1/teams/", s.handleTeamRoutes)
 	mux.HandleFunc("/api/v1/apps/", s.handleAppRoutes)
@@ -227,6 +231,10 @@ func (s *Server) handlePlatformOverview(w http.ResponseWriter, r *http.Request) 
 	s.handleOverview(w, r, model.AggregateScope{Kind: model.ScopePlatform})
 }
 
+func (s *Server) handlePlatformOverviewTrend(w http.ResponseWriter, r *http.Request) {
+	s.handleOverviewTrend(w, r, model.AggregateScope{Kind: model.ScopePlatform})
+}
+
 func (s *Server) handlePlatformNodeSummary(w http.ResponseWriter, r *http.Request) {
 	if !s.isLicensed() {
 		http.Error(w, "plugin not authorized", http.StatusForbidden)
@@ -334,6 +342,10 @@ func (s *Server) handleAppRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if suffix == "/overview" {
 		s.handleOverview(w, r, model.AggregateScope{Kind: model.ScopeApp, ID: id})
+		return
+	}
+	if suffix == "/overview/trend" {
+		s.handleOverviewTrend(w, r, model.AggregateScope{Kind: model.ScopeApp, ID: id})
 		return
 	}
 	if suffix == "/gateway/http-logger/sync" {
@@ -498,6 +510,10 @@ func (s *Server) handleComponentRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleOverview(w, r, model.AggregateScope{Kind: model.ScopeComponent, ID: id})
 		return
 	}
+	if suffix == "/overview/trend" {
+		s.handleOverviewTrend(w, r, model.AggregateScope{Kind: model.ScopeComponent, ID: id})
+		return
+	}
 	if !strings.HasPrefix(suffix, "/internal-routes") {
 		http.NotFound(w, r)
 		return
@@ -551,6 +567,53 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, scope mo
 		"data":     overview,
 		"warnings": []string{},
 		"meta":     model.QueryMeta{Window: window},
+	})
+}
+
+func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, scope model.AggregateScope) {
+	if !s.isLicensed() {
+		http.Error(w, "plugin not authorized", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.overviewService == nil {
+		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var (
+		trend model.OverviewTrend
+		err   error
+	)
+	switch scope.Kind {
+	case model.ScopePlatform:
+		trend, err = s.overviewService.GetPlatformRealtimeTrend(r.Context())
+	case model.ScopeApp:
+		trend, err = s.overviewService.GetAppRealtimeTrend(r.Context(), scope.ID)
+	case model.ScopeComponent:
+		trend, err = s.overviewService.GetComponentRealtimeTrend(r.Context(), scope.ID)
+	default:
+		err = fmt.Errorf("unsupported overview trend scope %s", scope.Kind)
+	}
+	if err != nil {
+		s.logger.WithError(err).Warn("get overview trend failed")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"data":     model.OverviewTrend{Scope: scope, Window: model.Window5m, Points: []model.OverviewTrendPoint{}},
+			"warnings": []string{"prometheus overview trend query is unavailable"},
+			"meta": model.QueryMeta{
+				Window:  model.Window5m,
+				Partial: true,
+				Stale:   true,
+			},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":     trend,
+		"warnings": []string{},
+		"meta":     model.QueryMeta{Window: model.Window5m},
 	})
 }
 

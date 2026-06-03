@@ -33,6 +33,36 @@ func (f *fakeOverviewService) GetComponentOverview(_ context.Context, componentI
 	return model.Overview{Scope: f.scope, Window: window, ThroughputPerSecond: 3}, nil
 }
 
+func (f *fakeOverviewService) GetPlatformRealtimeTrend(_ context.Context) (model.OverviewTrend, error) {
+	f.scope = model.AggregateScope{Kind: model.ScopePlatform}
+	f.window = model.Window5m
+	return model.OverviewTrend{
+		Scope:  f.scope,
+		Window: model.Window5m,
+		Points: []model.OverviewTrendPoint{{Timestamp: 100, RequestPerSecond: 2}},
+	}, nil
+}
+
+func (f *fakeOverviewService) GetAppRealtimeTrend(_ context.Context, appID string) (model.OverviewTrend, error) {
+	f.scope = model.AggregateScope{Kind: model.ScopeApp, ID: appID}
+	f.window = model.Window5m
+	return model.OverviewTrend{
+		Scope:  f.scope,
+		Window: model.Window5m,
+		Points: []model.OverviewTrendPoint{{Timestamp: 100, RequestPerSecond: 3}},
+	}, nil
+}
+
+func (f *fakeOverviewService) GetComponentRealtimeTrend(_ context.Context, componentID string) (model.OverviewTrend, error) {
+	f.scope = model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}
+	f.window = model.Window5m
+	return model.OverviewTrend{
+		Scope:  f.scope,
+		Window: model.Window5m,
+		Points: []model.OverviewTrendPoint{{Timestamp: 100, RequestPerSecond: 4}},
+	}, nil
+}
+
 func (f *fakeOverviewService) GetPlatformNodeSummaries(_ context.Context, window model.Window) ([]model.PlatformNodeSummary, error) {
 	f.scope = model.AggregateScope{Kind: model.ScopePlatform}
 	f.window = window
@@ -69,6 +99,31 @@ func TestServerHandlesOverviewRoutes(t *testing.T) {
 		{path: "/api/v1/platform/overview?window=5m", want: `"request_count":10`},
 		{path: "/api/v1/apps/app-a/overview?window=10m", want: `"request_count":20`},
 		{path: "/api/v1/components/svc-a/overview?window=5m", want: `"throughput_per_second":3`},
+	}
+	for _, tt := range tests {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+		s.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", tt.path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), tt.want) {
+			t.Fatalf("%s body = %s; want contains %s", tt.path, rec.Body.String(), tt.want)
+		}
+	}
+}
+
+func TestServerHandlesOverviewTrendRoutes(t *testing.T) {
+	overview := &fakeOverviewService{}
+	s := New(Config{OverviewService: overview})
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/api/v1/platform/overview/trend", want: `"request_per_second":2`},
+		{path: "/api/v1/apps/app-a/overview/trend", want: `"request_per_second":3`},
+		{path: "/api/v1/components/svc-a/overview/trend", want: `"request_per_second":4`},
 	}
 	for _, tt := range tests {
 		rec := httptest.NewRecorder()

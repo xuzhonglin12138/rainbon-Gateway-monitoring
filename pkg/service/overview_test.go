@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"math"
 	"testing"
+	"time"
 
 	promclient "github.com/goodrain/rainbond-plugin-template/pkg/clients/prometheus"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
@@ -10,11 +12,11 @@ import (
 
 func TestOverviewServiceGetsPlatformOverview(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
-		`sum(increase(apisix_http_status[5m]))`:              1000,
-		`sum(increase(apisix_http_status{code=~"5.."}[5m]))`: 5,
-		`sum(rate(apisix_http_latency_sum[5m]))`:             2,
-		`sum(rate(apisix_http_latency_count[5m]))`:           10,
-		`sum(rate(apisix_bandwidth{type="egress"}[5m]))`:     2048,
+		`sum(increase(apisix_http_status[5m]))`:                     1000,
+		`sum(increase(apisix_http_status{code=~"5.."}[5m]))`:        5,
+		`sum(rate(apisix_http_latency_sum{type="upstream"}[5m]))`:   200,
+		`sum(rate(apisix_http_latency_count{type="upstream"}[5m]))`: 10,
+		`sum(rate(apisix_bandwidth{type="egress"}[5m]))`:            2048,
 	}}
 	service := NewOverviewService(OverviewConfig{Prometheus: client})
 
@@ -28,18 +30,18 @@ func TestOverviewServiceGetsPlatformOverview(t *testing.T) {
 	if overview.ErrorRate != 0.005 {
 		t.Fatalf("error rate = %v; want 0.005", overview.ErrorRate)
 	}
-	if overview.AvgLatencyMs != 200 {
-		t.Fatalf("latency = %v; want 200", overview.AvgLatencyMs)
+	if overview.AvgLatencyMs != 20 {
+		t.Fatalf("latency = %v; want 20", overview.AvgLatencyMs)
 	}
 }
 
 func TestOverviewServiceGetsAppOverviewWithRouteIndex(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
-		`sum(increase(apisix_http_status{route=~"route-a"}[10m]))`:             200,
-		`sum(increase(apisix_http_status{route=~"route-a",code=~"5.."}[10m]))`: 1,
-		`sum(rate(apisix_http_latency_sum{route=~"route-a"}[10m]))`:            1,
-		`sum(rate(apisix_http_latency_count{route=~"route-a"}[10m]))`:          5,
-		`sum(rate(apisix_bandwidth{route=~"route-a",type="egress"}[10m]))`:     512,
+		`sum(increase(apisix_http_status{route=~"route-a"}[10m]))`:                    200,
+		`sum(increase(apisix_http_status{route=~"route-a",code=~"5.."}[10m]))`:        1,
+		`sum(rate(apisix_http_latency_sum{route=~"route-a",type="upstream"}[10m]))`:   100,
+		`sum(rate(apisix_http_latency_count{route=~"route-a",type="upstream"}[10m]))`: 5,
+		`sum(rate(apisix_bandwidth{route=~"route-a",type="egress"}[10m]))`:            512,
 	}}
 	service := NewOverviewService(OverviewConfig{
 		Prometheus: client,
@@ -56,10 +58,50 @@ func TestOverviewServiceGetsAppOverviewWithRouteIndex(t *testing.T) {
 	if overview.RequestCount != 200 {
 		t.Fatalf("request count = %v; want 200", overview.RequestCount)
 	}
+	if overview.AvgLatencyMs != 20 {
+		t.Fatalf("latency = %v; want 20", overview.AvgLatencyMs)
+	}
+}
+
+func TestOverviewServiceGetsGatewayRealtimeTrend(t *testing.T) {
+	client := &fakePrometheusClient{
+		ranges: map[string][]promclient.RangeSample{
+			`sum(rate(apisix_http_status[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 2}, {Timestamp: 130, Value: 3}}},
+			},
+			`sum(rate(apisix_http_status{code=~"5.."}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 1}, {Timestamp: 130, Value: 0}}},
+			},
+			`sum(rate(apisix_http_latency_sum{type="upstream"}[1m])) / sum(rate(apisix_http_latency_count{type="upstream"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 18}, {Timestamp: 130, Value: 20}}},
+			},
+			`sum(rate(apisix_bandwidth{type="egress"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 2048}, {Timestamp: 130, Value: 4096}}},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{Prometheus: client, Now: func() time.Time {
+		return time.Unix(400, 0)
+	}})
+
+	trend, err := service.GetPlatformRealtimeTrend(context.Background())
+	if err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	if len(trend.Points) != 2 {
+		t.Fatalf("points length = %d; want 2", len(trend.Points))
+	}
+	if trend.Points[0].RequestPerSecond != 2 || trend.Points[0].ErrorRate != 0.5 {
+		t.Fatalf("first point = %#v", trend.Points[0])
+	}
+	if math.Abs(trend.Points[1].AvgLatencyMs-20) > 0.000001 {
+		t.Fatalf("latency = %v; want 20", trend.Points[1].AvgLatencyMs)
+	}
 }
 
 func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
+		`sum(increase(app_request{service_id="svc-a",method="total"}[5m]))`:         3600,
 		`sum(rate(app_request{service_id="svc-a",method="total"}[5m]))`:             12,
 		`avg(app_requesttime{service_id="svc-a",mode="avg"})`:                       86,
 		`sum(rate(container_network_receive_bytes_total{service_id="svc-a"}[5m]))`:  1024,
@@ -74,8 +116,14 @@ func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 	if overview.ThroughputPerSecond != 12 {
 		t.Fatalf("throughput = %v; want 12", overview.ThroughputPerSecond)
 	}
+	if overview.RequestCount != 3600 {
+		t.Fatalf("request count = %v; want 3600", overview.RequestCount)
+	}
 	if overview.AvgLatencyMs != 86 {
 		t.Fatalf("latency = %v; want 86", overview.AvgLatencyMs)
+	}
+	if overview.EgressBytesPerSec != 2048 {
+		t.Fatalf("egress = %v; want 2048", overview.EgressBytesPerSec)
 	}
 }
 

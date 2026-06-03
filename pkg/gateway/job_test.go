@@ -106,6 +106,60 @@ func TestHTTPLoggerAttachJobStoresConsoleAppIDWhenMatchingRegionAppID(t *testing
 	}
 }
 
+func TestHTTPLoggerAttachJobMatchesRouteByServiceAliasAndStoresConsoleAppID(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name": "gr1ea4bc-8080-demo",
+			"labels": map[string]interface{}{
+				"creator":  "Rainbond",
+				"app_id":   "region-app-a",
+				"gr1ea4bc": "service_alias",
+			},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{map[string]interface{}{"name": "http-a"}},
+		},
+	}}
+	other := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name":   "gr7bd8bd-8080-demo",
+			"labels": map[string]interface{}{"creator": "Rainbond", "app_id": "region-app-b"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{map[string]interface{}{"name": "http-b"}},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching, other}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:         client,
+		MappingStore:   store,
+		Namespaces:     []string{"tenant-ns"},
+		AppID:          "console-app-a",
+		MappingAppID:   "console-app-a",
+		ServiceAliases: []string{"gr1ea4bc"},
+		Config:         HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if len(client.updated) != 1 {
+		t.Fatalf("updates = %d; want 1", len(client.updated))
+	}
+	if client.updated[0].GetName() != "gr1ea4bc-8080-demo" {
+		t.Fatalf("updated route = %q; want gr1ea4bc-8080-demo", client.updated[0].GetName())
+	}
+	if len(store.mappings) == 0 {
+		t.Fatal("no route mappings were saved")
+	}
+	for _, appID := range store.mappings {
+		if appID != "console-app-a" {
+			t.Fatalf("saved mapping app_id = %q; want console-app-a", appID)
+		}
+	}
+}
+
 func TestHTTPLoggerAttachJobLogsRouteScanAndMappingSave(t *testing.T) {
 	matching := &unstructured.Unstructured{Object: map[string]interface{}{
 		"metadata": map[string]interface{}{

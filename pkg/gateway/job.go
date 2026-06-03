@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
@@ -84,14 +85,15 @@ func (c *DynamicRouteClient) listResource(ctx context.Context, namespace string,
 }
 
 type HTTPLoggerAttachJob struct {
-	Client       RouteClient
-	MappingStore RouteMappingStore
-	Namespaces   []string
-	AppID        string
-	MappingAppID string
-	Config       HTTPLoggerConfig
-	Interval     time.Duration
-	Logger       *logrus.Logger
+	Client         RouteClient
+	MappingStore   RouteMappingStore
+	Namespaces     []string
+	AppID          string
+	MappingAppID   string
+	ServiceAliases []string
+	Config         HTTPLoggerConfig
+	Interval       time.Duration
+	Logger         *logrus.Logger
 }
 
 type RouteMappingStore interface {
@@ -124,21 +126,24 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 			}).Info("scanned apisix routes for http-logger")
 		}
 		for _, route := range routes {
-			matched := j.matchesApp(route)
+			routeMatch := j.matchRoute(route)
 			managed := IsRainbondManagedRoute(route)
 			if j.Logger != nil && route != nil {
 				labels := route.GetLabels()
 				j.Logger.WithFields(logrus.Fields{
-					"namespace":        namespace,
-					"route":            route.GetName(),
-					"label_app_id":     labels["app_id"],
-					"label_creator":    labels["creator"],
-					"label_service_id": firstLabel(labels, "service_id", "component_id"),
-					"matched":          matched,
-					"rainbond_managed": managed,
+					"namespace":           namespace,
+					"route":               route.GetName(),
+					"label_app_id":        labels["app_id"],
+					"label_creator":       labels["creator"],
+					"label_service_id":    firstLabel(labels, "service_id", "component_id"),
+					"label_service_alias": findServiceAlias(labels),
+					"matched":             routeMatch.matched,
+					"match_reason":        routeMatch.reason,
+					"rainbond_managed":    managed,
+					"service_aliases":     strings.Join(normalizeServiceAliases(j.ServiceAliases), ","),
 				}).Info("checked apisix route for http-logger")
 			}
-			if !matched {
+			if !routeMatch.matched {
 				continue
 			}
 			changed, err := EnsureHTTPLoggerPlugin(route, j.Config)
@@ -179,13 +184,43 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 }
 
 func (j *HTTPLoggerAttachJob) matchesApp(route *unstructured.Unstructured) bool {
+	return j.matchRoute(route).matched
+}
+
+type routeMatchResult struct {
+	matched bool
+	reason  string
+}
+
+func (j *HTTPLoggerAttachJob) matchRoute(route *unstructured.Unstructured) routeMatchResult {
 	if j.AppID == "" {
-		return true
+		return routeMatchResult{matched: true, reason: "all"}
 	}
 	if route == nil {
-		return false
+		return routeMatchResult{reason: "none"}
 	}
-	return route.GetLabels()["app_id"] == j.AppID
+	labels := route.GetLabels()
+	if labels["app_id"] == j.AppID {
+		return routeMatchResult{matched: true, reason: "app_id_label"}
+	}
+	aliases := normalizeServiceAliases(j.ServiceAliases)
+	if len(aliases) == 0 {
+		return routeMatchResult{reason: "none"}
+	}
+	for _, alias := range aliases {
+		if labels["service_alias"] == alias || labels[alias] == "service_alias" {
+			return routeMatchResult{matched: true, reason: "service_alias_label"}
+		}
+		if routeNameMatchesServiceAlias(route.GetName(), alias) {
+			return routeMatchResult{matched: true, reason: "service_alias_prefix"}
+		}
+		for _, value := range strings.Split(labels["component_sort"], ",") {
+			if strings.TrimSpace(value) == alias {
+				return routeMatchResult{matched: true, reason: "component_sort_label"}
+			}
+		}
+	}
+	return routeMatchResult{reason: "none"}
 }
 
 func (j *HTTPLoggerAttachJob) Start(ctx context.Context) {
@@ -307,6 +342,27 @@ func findServiceAlias(labels map[string]string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeServiceAliases(aliases []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		if _, ok := seen[alias]; ok {
+			continue
+		}
+		seen[alias] = struct{}{}
+		result = append(result, alias)
+	}
+	return result
+}
+
+func routeNameMatchesServiceAlias(routeName, alias string) bool {
+	return routeName == alias || strings.HasPrefix(routeName, alias+"-")
 }
 
 func firstHTTPBackendServiceName(httpRoute map[string]interface{}) string {

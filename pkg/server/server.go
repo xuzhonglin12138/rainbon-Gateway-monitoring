@@ -90,6 +90,10 @@ type HTTPLoggerAppSyncer interface {
 	SyncHTTPLoggerForApp(ctx context.Context, namespace, matchAppID, mappingAppID string) error
 }
 
+type HTTPLoggerAppRouteSyncer interface {
+	SyncHTTPLoggerForAppRoutes(ctx context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string) error
+}
+
 const maxCollectorBatchSize = 5000
 const maxCollectorBodyBytes = 8 << 20
 
@@ -502,8 +506,10 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	var payload struct {
-		Namespace   string `json:"namespace"`
-		RegionAppID string `json:"region_app_id"`
+		Namespace        string   `json:"namespace"`
+		RegionAppID      string   `json:"region_app_id"`
+		ServiceAliases   []string `json:"service_aliases"`
+		ComponentAliases []string `json:"component_aliases"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid http logger sync payload"})
@@ -511,6 +517,7 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	}
 	payload.Namespace = strings.TrimSpace(payload.Namespace)
 	payload.RegionAppID = strings.TrimSpace(payload.RegionAppID)
+	serviceAliases := normalizeStringList(append(payload.ServiceAliases, payload.ComponentAliases...))
 	if payload.Namespace == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "namespace is required"})
 		return
@@ -520,35 +527,41 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 		syncAppID = appID
 	}
 	s.logger.WithFields(logrus.Fields{
-		"namespace":     payload.Namespace,
-		"app_id":        appID,
-		"region_app_id": syncAppID,
+		"namespace":       payload.Namespace,
+		"app_id":          appID,
+		"region_app_id":   syncAppID,
+		"service_aliases": strings.Join(serviceAliases, ","),
 	}).Info("syncing app route-level http-logger")
 	var err error
-	if appSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppSyncer); ok {
+	if appRouteSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppRouteSyncer); ok {
+		err = appRouteSyncer.SyncHTTPLoggerForAppRoutes(r.Context(), payload.Namespace, syncAppID, appID, serviceAliases)
+	} else if appSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppSyncer); ok {
 		err = appSyncer.SyncHTTPLoggerForApp(r.Context(), payload.Namespace, syncAppID, appID)
 	} else {
 		err = s.httpLoggerSyncer.SyncHTTPLogger(r.Context(), payload.Namespace, syncAppID)
 	}
 	if err != nil {
 		s.logger.WithError(err).WithFields(logrus.Fields{
-			"namespace":     payload.Namespace,
-			"app_id":        appID,
-			"region_app_id": syncAppID,
+			"namespace":       payload.Namespace,
+			"app_id":          appID,
+			"region_app_id":   syncAppID,
+			"service_aliases": strings.Join(serviceAliases, ","),
 		}).Warn("sync app http logger failed")
 		http.Error(w, "sync app http logger failed", http.StatusServiceUnavailable)
 		return
 	}
 	s.logger.WithFields(logrus.Fields{
-		"namespace":     payload.Namespace,
-		"app_id":        appID,
-		"region_app_id": syncAppID,
+		"namespace":       payload.Namespace,
+		"app_id":          appID,
+		"region_app_id":   syncAppID,
+		"service_aliases": strings.Join(serviceAliases, ","),
 	}).Info("synced app route-level http-logger")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"data": map[string]string{
-			"namespace":     payload.Namespace,
-			"app_id":        appID,
-			"region_app_id": syncAppID,
+		"data": map[string]interface{}{
+			"namespace":       payload.Namespace,
+			"app_id":          appID,
+			"region_app_id":   syncAppID,
+			"service_aliases": serviceAliases,
 		},
 	})
 }
@@ -859,6 +872,23 @@ func splitScopedPath(path, prefix string) (string, string, bool) {
 		suffix = "/" + parts[1]
 	}
 	return parts[0], suffix, true
+}
+
+func normalizeStringList(values []string) []string {
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func parseLimit(raw string, fallback int) int {

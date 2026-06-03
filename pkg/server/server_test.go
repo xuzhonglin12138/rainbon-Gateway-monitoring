@@ -58,10 +58,11 @@ func (f fakeRouteGroupQueryStore) ListAppComponentSummaries(_ context.Context, _
 }
 
 type fakeHTTPLoggerSyncer struct {
-	namespace    string
-	appID        string
-	matchAppID   string
-	mappingAppID string
+	namespace      string
+	appID          string
+	matchAppID     string
+	mappingAppID   string
+	serviceAliases []string
 }
 
 func (f *fakeHTTPLoggerSyncer) SyncHTTPLogger(_ context.Context, namespace, appID string) error {
@@ -74,6 +75,14 @@ func (f *fakeHTTPLoggerSyncer) SyncHTTPLoggerForApp(_ context.Context, namespace
 	f.namespace = namespace
 	f.matchAppID = matchAppID
 	f.mappingAppID = mappingAppID
+	return nil
+}
+
+func (f *fakeHTTPLoggerSyncer) SyncHTTPLoggerForAppRoutes(_ context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string) error {
+	f.namespace = namespace
+	f.matchAppID = matchAppID
+	f.mappingAppID = mappingAppID
+	f.serviceAliases = serviceAliases
 	return nil
 }
 
@@ -241,6 +250,29 @@ func TestServerHandlesAppHTTPLoggerSyncWithNamespaceAndRegionAppID(t *testing.T)
 	}
 	if !strings.Contains(resp.Body.String(), `"app_id":"12"`) || !strings.Contains(resp.Body.String(), `"region_app_id":"region-app-a"`) {
 		t.Fatalf("response body = %s; want app_id 12 and region_app_id region-app-a", resp.Body.String())
+	}
+}
+
+func TestServerHandlesAppHTTPLoggerSyncWithServiceAliases(t *testing.T) {
+	syncer := &fakeHTTPLoggerSyncer{}
+	server := New(Config{HTTPLoggerSyncer: syncer})
+
+	payload := `{"namespace":"team-ns","region_app_id":"region-app-a","service_aliases":["gr1ea4bc"," gr1ea4bc ","gr7bd8bd"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/12/gateway/http-logger/sync", strings.NewReader(payload))
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+	if len(syncer.serviceAliases) != 2 {
+		t.Fatalf("serviceAliases = %#v; want two deduplicated aliases", syncer.serviceAliases)
+	}
+	if syncer.serviceAliases[0] != "gr1ea4bc" || syncer.serviceAliases[1] != "gr7bd8bd" {
+		t.Fatalf("serviceAliases = %#v; want gr1ea4bc, gr7bd8bd", syncer.serviceAliases)
+	}
+	if !strings.Contains(resp.Body.String(), `"service_aliases":["gr1ea4bc","gr7bd8bd"]`) {
+		t.Fatalf("response body = %s; want normalized service_aliases", resp.Body.String())
 	}
 }
 

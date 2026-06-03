@@ -130,6 +130,7 @@ func metricFromLog(routeGroup string, mapping model.RouteMapping, log model.Apis
 		TeamID:       mapping.TeamID,
 		AppID:        mapping.AppID,
 		ComponentID:  mapping.ComponentID,
+		ServiceAlias: mapping.ServiceAlias,
 	}
 	if log.Status >= 500 {
 		metric.ErrorCount = 1

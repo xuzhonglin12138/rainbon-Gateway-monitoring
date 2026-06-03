@@ -119,6 +119,7 @@ type RouteGroupMetric struct {
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
 	ComponentID        string  `json:"component_id,omitempty"`
+	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
 
 func (m RouteGroupMetric) ErrorRate() float64 {
@@ -153,6 +154,7 @@ type RouteGroupItem struct {
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
 	ComponentID        string  `json:"component_id,omitempty"`
+	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
 
 func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
@@ -167,7 +169,18 @@ func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 		AppID:              metric.AppID,
 		TeamID:             metric.TeamID,
 		ComponentID:        metric.ComponentID,
+		ServiceAlias:       metric.ServiceAlias,
 	}
+}
+
+type AppComponentSummary struct {
+	ComponentID  string  `json:"component_id"`
+	ServiceAlias string  `json:"service_alias,omitempty"`
+	Name         string  `json:"name"`
+	RequestCount int64   `json:"request_count"`
+	ErrorCount   int64   `json:"error_count"`
+	ErrorRate    float64 `json:"error_rate"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
 }
 
 type QueryMeta struct {

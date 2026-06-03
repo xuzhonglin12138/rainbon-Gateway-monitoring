@@ -5,17 +5,24 @@ import (
 	"math"
 	"testing"
 
+	promclient "github.com/goodrain/rainbond-plugin-template/pkg/clients/prometheus"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
 )
 
 type fakePrometheusClient struct {
 	values  map[string]float64
+	vectors map[string][]promclient.Sample
 	queries []string
 }
 
 func (f *fakePrometheusClient) QueryScalar(ctx context.Context, query string) (float64, error) {
 	f.queries = append(f.queries, query)
 	return f.values[query], nil
+}
+
+func (f *fakePrometheusClient) QueryInstant(ctx context.Context, query string) ([]promclient.Sample, error) {
+	f.queries = append(f.queries, query)
+	return f.vectors[query], nil
 }
 
 type fakeSLAStore struct {

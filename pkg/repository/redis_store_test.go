@@ -164,6 +164,51 @@ func TestRedisStoreListRouteGroupsReadsSnapshot(t *testing.T) {
 	}
 }
 
+func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		keys: []interface{}{
+			"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005",
+			"nm:app:app-a:5m:route-group:_api_pay:bucket:1710000005",
+		},
+		hash: []interface{}{
+			"route_group", "/api/orders/*",
+			"request_count", "3",
+			"error_count", "1",
+			"latency_count", "3",
+			"latency_sum_ms", "90",
+			"component_id", "svc-a",
+			"service_alias", "orders",
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListAppComponentSummaries(context.Background(), "app-a", model.Window5m, 50)
+	if err != nil {
+		t.Fatalf("ListAppComponentSummaries() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].ComponentID != "svc-a" || items[0].Name != "orders" {
+		t.Fatalf("component identity = %#v; want svc-a/orders", items[0])
+	}
+	if items[0].RequestCount != 6 {
+		t.Fatalf("request count = %d; want 6", items[0].RequestCount)
+	}
+	if items[0].ErrorCount != 2 {
+		t.Fatalf("error count = %d; want 2", items[0].ErrorCount)
+	}
+	if items[0].ErrorRate != float64(2)/float64(6) {
+		t.Fatalf("error rate = %v; want %v", items[0].ErrorRate, float64(2)/float64(6))
+	}
+	if items[0].AvgLatencyMs != 30 {
+		t.Fatalf("avg latency = %v; want 30", items[0].AvgLatencyMs)
+	}
+}
+
 func TestRedisStoreReturnsRouteGroupSnapshotMeta(t *testing.T) {
 	client := &fakeRedisClient{}
 	store := NewRedisStore(client)

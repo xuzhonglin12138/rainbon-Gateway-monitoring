@@ -60,6 +60,7 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		"team_id", metric.TeamID,
 		"app_id", metric.AppID,
 		"component_id", metric.ComponentID,
+		"service_alias", metric.ServiceAlias,
 	}
 	if _, err := s.client.Do(ctx, append([]string{"HSET", key}, static...)...); err != nil {
 		return err
@@ -84,6 +85,39 @@ func (s *RedisStore) ListRouteGroups(ctx context.Context, scope model.AggregateS
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil, err
 	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (s *RedisStore) ListAppComponentSummaries(ctx context.Context, appID string, window model.Window, limit int) ([]model.AppComponentSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	metrics, err := s.aggregateComponentMetrics(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]model.AppComponentSummary, 0, len(metrics))
+	for componentID, metric := range metrics {
+		name := metric.ServiceAlias
+		if name == "" {
+			name = componentID
+		}
+		items = append(items, model.AppComponentSummary{
+			ComponentID:  componentID,
+			ServiceAlias: metric.ServiceAlias,
+			Name:         name,
+			RequestCount: metric.RequestCount,
+			ErrorCount:   metric.ErrorCount,
+			ErrorRate:    metric.ErrorRate(),
+			AvgLatencyMs: metric.AvgLatencyMs(),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].RequestCount > items[j].RequestCount
+	})
 	if len(items) > limit {
 		items = items[:limit]
 	}
@@ -166,6 +200,42 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 		items = items[:limit]
 	}
 	return items, nil
+}
+
+func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
+	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	if err != nil {
+		return nil, err
+	}
+	keys := stringSlice(keysValue)
+	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	metrics := make(map[string]model.RouteGroupMetric)
+	for _, key := range keys {
+		bucketUnix, ok := bucketUnixFromKey(key)
+		if !ok || bucketUnix < minBucket {
+			continue
+		}
+		values, err := s.client.Do(ctx, "HGETALL", key)
+		if err != nil {
+			return nil, err
+		}
+		metric := metricFromHash(values)
+		if metric.ComponentID == "" {
+			continue
+		}
+		current := metrics[metric.ComponentID]
+		current.ComponentID = metric.ComponentID
+		current.ServiceAlias = firstNonEmpty(current.ServiceAlias, metric.ServiceAlias)
+		current.RequestCount += metric.RequestCount
+		current.ErrorCount += metric.ErrorCount
+		current.UpstreamErrorCount += metric.UpstreamErrorCount
+		current.LatencySumMs += metric.LatencySumMs
+		current.LatencyCount += metric.LatencyCount
+		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
+		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
+		metrics[metric.ComponentID] = current
+	}
+	return metrics, nil
 }
 
 func (s *RedisStore) saveSnapshot(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string, items []model.RouteGroupItem) error {
@@ -438,6 +508,7 @@ func metricFromHash(value interface{}) model.RouteGroupMetric {
 		TeamID:             fields["team_id"],
 		AppID:              fields["app_id"],
 		ComponentID:        fields["component_id"],
+		ServiceAlias:       fields["service_alias"],
 	}
 }
 

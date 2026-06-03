@@ -51,6 +51,10 @@ type RouteGroupQueryStore interface {
 	ListRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error)
 }
 
+type AppComponentSummaryStore interface {
+	ListAppComponentSummaries(ctx context.Context, appID string, window model.Window, limit int) ([]model.AppComponentSummary, error)
+}
+
 type RouteGroupSnapshotMetaStore interface {
 	GetRouteGroupSnapshotMeta(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string) (model.QueryMeta, error)
 }
@@ -63,6 +67,8 @@ type OverviewService interface {
 	GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error)
 	GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error)
 	GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error)
+	GetPlatformNodeSummaries(ctx context.Context, window model.Window) ([]model.PlatformNodeSummary, error)
+	GetPlatformNodeDetail(ctx context.Context, nodeName string, window model.Window) (model.PlatformNodeDetail, error)
 }
 
 type ConfigStore interface {
@@ -107,6 +113,8 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("/api/v1/collector/apisix/logs", s.handleCollectApisixLogs)
 	mux.HandleFunc("/api/v1/platform/internal-routes/top-errors", s.handlePlatformTopErrors)
 	mux.HandleFunc("/api/v1/platform/internal-routes/top-latency", s.handlePlatformTopLatency)
+	mux.HandleFunc("/api/v1/platform/nodes/", s.handlePlatformNodeRoutes)
+	mux.HandleFunc("/api/v1/platform/nodes/summary", s.handlePlatformNodeSummary)
 	mux.HandleFunc("/api/v1/platform/overview", s.handlePlatformOverview)
 	mux.HandleFunc("/api/v1/teams/", s.handleTeamRoutes)
 	mux.HandleFunc("/api/v1/apps/", s.handleAppRoutes)
@@ -219,6 +227,81 @@ func (s *Server) handlePlatformOverview(w http.ResponseWriter, r *http.Request) 
 	s.handleOverview(w, r, model.AggregateScope{Kind: model.ScopePlatform})
 }
 
+func (s *Server) handlePlatformNodeSummary(w http.ResponseWriter, r *http.Request) {
+	if !s.isLicensed() {
+		http.Error(w, "plugin not authorized", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.overviewService == nil {
+		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	nodes, err := s.overviewService.GetPlatformNodeSummaries(r.Context(), window)
+	if err != nil {
+		s.logger.WithError(err).Warn("get platform node summaries failed")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"data":     []model.PlatformNodeSummary{},
+			"warnings": []string{"prometheus node summary query is unavailable"},
+			"meta":     model.QueryMeta{Window: window, Partial: true, Stale: true},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":     nodes,
+		"warnings": []string{},
+		"meta":     model.QueryMeta{Window: window},
+	})
+}
+
+func (s *Server) handlePlatformNodeRoutes(w http.ResponseWriter, r *http.Request) {
+	id, suffix, ok := splitScopedPath(r.URL.Path, "/api/v1/platform/nodes/")
+	if !ok || suffix != "/detail" {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.isLicensed() {
+		http.Error(w, "plugin not authorized", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.overviewService == nil {
+		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	detail, err := s.overviewService.GetPlatformNodeDetail(r.Context(), id, window)
+	if err != nil {
+		s.logger.WithError(err).Warn("get platform node detail failed")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"data":     nil,
+			"warnings": []string{"prometheus node detail query is unavailable"},
+			"meta":     model.QueryMeta{Window: window, Partial: true, Stale: true},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":     detail,
+		"warnings": []string{},
+		"meta":     model.QueryMeta{Window: window},
+	})
+}
+
 func (s *Server) handleTeamRoutes(w http.ResponseWriter, r *http.Request) {
 	id, suffix, ok := splitScopedPath(r.URL.Path, "/api/v1/teams/")
 	if !ok || !strings.HasPrefix(suffix, "/internal-routes/") {
@@ -255,6 +338,10 @@ func (s *Server) handleAppRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if suffix == "/gateway/http-logger/sync" {
 		s.handleAppHTTPLoggerSync(w, r, id)
+		return
+	}
+	if suffix == "/components/summary" {
+		s.handleAppComponentSummary(w, r, id)
 		return
 	}
 	if !strings.HasPrefix(suffix, "/internal-routes/") {
@@ -509,6 +596,43 @@ func (s *Server) handleAppRouteGroupRules(w http.ResponseWriter, r *http.Request
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleAppComponentSummary(w http.ResponseWriter, r *http.Request, appID string) {
+	if !s.isLicensed() {
+		http.Error(w, "plugin not authorized", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store, ok := s.queryStore.(AppComponentSummaryStore)
+	if !ok || store == nil {
+		http.Error(w, "component summary store is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	limit := parseLimit(r.URL.Query().Get("limit"), 50)
+	items, err := store.ListAppComponentSummaries(r.Context(), appID, window, limit)
+	if err != nil {
+		s.logger.WithError(err).Warn("list app component summaries failed")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"data":     []model.AppComponentSummary{},
+			"warnings": []string{"redis app component summary is unavailable"},
+			"meta":     model.QueryMeta{Window: window, Partial: true, Stale: true},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":     items,
+		"warnings": []string{},
+		"meta":     model.QueryMeta{Window: window},
+	})
 }
 
 func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope model.AggregateScope, sortBy string) {

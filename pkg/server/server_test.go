@@ -39,8 +39,9 @@ func (f *fakeConfigStore) SaveRouteGroupRules(_ context.Context, _ string, rules
 }
 
 type fakeRouteGroupQueryStore struct {
-	items []model.RouteGroupItem
-	meta  model.QueryMeta
+	items      []model.RouteGroupItem
+	components []model.AppComponentSummary
+	meta       model.QueryMeta
 }
 
 func (f fakeRouteGroupQueryStore) ListRouteGroups(_ context.Context, _ model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
@@ -49,6 +50,10 @@ func (f fakeRouteGroupQueryStore) ListRouteGroups(_ context.Context, _ model.Agg
 
 func (f fakeRouteGroupQueryStore) GetRouteGroupSnapshotMeta(_ context.Context, _ model.AggregateScope, _ model.Window, _ string) (model.QueryMeta, error) {
 	return f.meta, nil
+}
+
+func (f fakeRouteGroupQueryStore) ListAppComponentSummaries(_ context.Context, _ string, _ model.Window, _ int) ([]model.AppComponentSummary, error) {
+	return f.components, nil
 }
 
 type fakeHTTPLoggerSyncer struct {
@@ -239,5 +244,31 @@ func TestServerIncludesRouteGroupSnapshotFreshnessMeta(t *testing.T) {
 	}
 	if body.Meta.FreshnessSeconds != 33 || !body.Meta.Stale {
 		t.Fatalf("meta = %#v; want freshness 33 stale true", body.Meta)
+	}
+}
+
+func TestServerHandlesAppComponentSummary(t *testing.T) {
+	server := New(Config{
+		QueryStore: fakeRouteGroupQueryStore{
+			components: []model.AppComponentSummary{{
+				ComponentID:  "svc-a",
+				ServiceAlias: "orders",
+				Name:         "orders",
+				RequestCount: 12,
+				ErrorCount:   1,
+				ErrorRate:    0.08333333333333333,
+				AvgLatencyMs: 45,
+			}},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/apps/app-a/components/summary?window=5m", nil)
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"component_id":"svc-a"`) || !strings.Contains(resp.Body.String(), `"avg_latency_ms":45`) {
+		t.Fatalf("response body = %s; want component summary", resp.Body.String())
 	}
 }

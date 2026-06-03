@@ -88,6 +88,7 @@ type HTTPLoggerAttachJob struct {
 	MappingStore RouteMappingStore
 	Namespaces   []string
 	AppID        string
+	MappingAppID string
 	Config       HTTPLoggerConfig
 	Interval     time.Duration
 	Logger       *logrus.Logger
@@ -171,6 +172,9 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 	}
 	mappings := RouteMappingsFromApisixRoute(namespace, route)
 	for _, mapping := range mappings {
+		if j.MappingAppID != "" {
+			mapping.AppID = j.MappingAppID
+		}
 		if err := j.MappingStore.SaveRouteMapping(ctx, mapping, 10*time.Minute); err != nil {
 			return fmt.Errorf("save route mapping %s: %w", mapping.RouteID, err)
 		}

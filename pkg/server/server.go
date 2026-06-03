@@ -86,6 +86,10 @@ type HTTPLoggerSyncer interface {
 	SyncHTTPLogger(ctx context.Context, namespace, appID string) error
 }
 
+type HTTPLoggerAppSyncer interface {
+	SyncHTTPLoggerForApp(ctx context.Context, namespace, matchAppID, mappingAppID string) error
+}
+
 const maxCollectorBatchSize = 5000
 const maxCollectorBodyBytes = 8 << 20
 
@@ -487,15 +491,22 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	if syncAppID == "" {
 		syncAppID = appID
 	}
-	if err := s.httpLoggerSyncer.SyncHTTPLogger(r.Context(), payload.Namespace, syncAppID); err != nil {
+	var err error
+	if appSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppSyncer); ok {
+		err = appSyncer.SyncHTTPLoggerForApp(r.Context(), payload.Namespace, syncAppID, appID)
+	} else {
+		err = s.httpLoggerSyncer.SyncHTTPLogger(r.Context(), payload.Namespace, syncAppID)
+	}
+	if err != nil {
 		s.logger.WithError(err).Warn("sync app http logger failed")
 		http.Error(w, "sync app http logger failed", http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]string{
-			"namespace": payload.Namespace,
-			"app_id":    syncAppID,
+			"namespace":     payload.Namespace,
+			"app_id":        appID,
+			"region_app_id": syncAppID,
 		},
 	})
 }

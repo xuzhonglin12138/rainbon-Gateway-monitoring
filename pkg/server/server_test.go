@@ -58,13 +58,22 @@ func (f fakeRouteGroupQueryStore) ListAppComponentSummaries(_ context.Context, _
 }
 
 type fakeHTTPLoggerSyncer struct {
-	namespace string
-	appID     string
+	namespace    string
+	appID        string
+	matchAppID   string
+	mappingAppID string
 }
 
 func (f *fakeHTTPLoggerSyncer) SyncHTTPLogger(_ context.Context, namespace, appID string) error {
 	f.namespace = namespace
 	f.appID = appID
+	return nil
+}
+
+func (f *fakeHTTPLoggerSyncer) SyncHTTPLoggerForApp(_ context.Context, namespace, matchAppID, mappingAppID string) error {
+	f.namespace = namespace
+	f.matchAppID = matchAppID
+	f.mappingAppID = mappingAppID
 	return nil
 }
 
@@ -224,11 +233,14 @@ func TestServerHandlesAppHTTPLoggerSyncWithNamespaceAndRegionAppID(t *testing.T)
 	if syncer.namespace != "team-ns" {
 		t.Fatalf("namespace = %q; want team-ns", syncer.namespace)
 	}
-	if syncer.appID != "region-app-a" {
-		t.Fatalf("appID = %q; want region-app-a", syncer.appID)
+	if syncer.matchAppID != "region-app-a" {
+		t.Fatalf("matchAppID = %q; want region-app-a", syncer.matchAppID)
 	}
-	if !strings.Contains(resp.Body.String(), `"app_id":"region-app-a"`) {
-		t.Fatalf("response body = %s; want app_id region-app-a", resp.Body.String())
+	if syncer.mappingAppID != "12" {
+		t.Fatalf("mappingAppID = %q; want 12", syncer.mappingAppID)
+	}
+	if !strings.Contains(resp.Body.String(), `"app_id":"12"`) || !strings.Contains(resp.Body.String(), `"region_app_id":"region-app-a"`) {
+		t.Fatalf("response body = %s; want app_id 12 and region_app_id region-app-a", resp.Body.String())
 	}
 }
 

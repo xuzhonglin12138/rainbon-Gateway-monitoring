@@ -25,7 +25,7 @@ const (
 	CollectorPath = "/api/v1/collector/apisix/logs"
 
 	// DefaultCollectorURI is the APISIX http-logger target URI for in-cluster access.
-	DefaultCollectorURI = "http://rainbond-gateway-monitoring" + CollectorPath
+	DefaultCollectorURI = "http://rainbond-gateway-monitoring.rbd-system.svc:8080" + CollectorPath
 
 	// DefaultHTTPLoggerTimeout is the APISIX http-logger request timeout in seconds.
 	DefaultHTTPLoggerTimeout = 3

@@ -84,7 +84,7 @@ make build-with-key
 | `NM_PROMETHEUS_TIMEOUT_SECONDS` | `3` | Prometheus 查询超时 |
 | `NM_DEFAULT_SLA_TARGET` | `0.999` | 默认应用 SLA 目标值 |
 | `NM_APISIX_NAMESPACES` | 空 | 可选预热扫描 namespace；常规场景由前端按当前团队 namespace 调用同步接口 |
-| `NM_COLLECTOR_URI` | `http://rainbond-gateway-monitoring/api/v1/collector/apisix/logs` | 写入到 APISIX `http-logger` 的 Collector 地址；需确保 APISIX 可访问 |
+| `NM_COLLECTOR_URI` | `http://rainbond-gateway-monitoring.rbd-system.svc:8080/api/v1/collector/apisix/logs` | 写入到 APISIX `http-logger` 的 Collector 地址；需确保 APISIX 可访问 |
 | `NM_HTTP_LOGGER_TIMEOUT_SECONDS` | `3` | APISIX `http-logger` 超时 |
 | `NM_HTTP_LOGGER_SSL_VERIFY` | `false` | APISIX `http-logger` SSL 校验 |
 | `NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS` | `60` | Route 挂载同步周期 |

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goodrain/rainbond-plugin-template/pkg/license"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
 )
 
@@ -113,6 +114,33 @@ func TestSplitScopedPath(t *testing.T) {
 	}
 	if suffix != "/internal-routes/top-errors" {
 		t.Fatalf("suffix = %q; want /internal-routes/top-errors", suffix)
+	}
+}
+
+func TestServerStaticJSSkipsLicenseWhenDebugEnvEnabled(t *testing.T) {
+	t.Setenv("NM_SKIP_LICENSE_CHECK", "true")
+	server := New(Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/static/main.js", nil)
+	resp := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(resp, req)
+
+	if resp.Code == http.StatusForbidden {
+		t.Fatalf("status = %d body = %s; want license check skipped", resp.Code, resp.Body.String())
+	}
+}
+
+func TestServerStaticJSRequiresLicenseByDefault(t *testing.T) {
+	server := New(Config{Checker: &license.Checker{}})
+
+	req := httptest.NewRequest(http.MethodGet, "/static/main.js", nil)
+	resp := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body = %s; want 403", resp.Code, resp.Body.String())
 	}
 }
 

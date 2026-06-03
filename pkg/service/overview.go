@@ -419,7 +419,13 @@ func prometheusRouteLabel(routeMatcher string) string {
 	if routeMatcher == "" {
 		return ""
 	}
-	return fmt.Sprintf(`route=~"%s"`, routeMatcher)
+	return fmt.Sprintf(`route=~"%s"`, prometheusStringLiteralValue(routeMatcher))
+}
+
+func prometheusStringLiteralValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return value
 }
 
 func metricSelector(labels ...string) string {

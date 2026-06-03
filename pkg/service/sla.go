@@ -77,8 +77,9 @@ func (s *SLAService) GetAppSLA(ctx context.Context, appID string, window model.W
 			"target":        target,
 		}).Info("using fallback app sla route matcher because store is nil")
 	}
-	totalQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s"}[%s]))`, routeMatcher, window)
-	errorQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s",code=~"5.."}[%s]))`, routeMatcher, window)
+	routeMatcherLiteral := prometheusStringLiteralValue(routeMatcher)
+	totalQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s"}[%s]))`, routeMatcherLiteral, window)
+	errorQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s",code=~"5.."}[%s]))`, routeMatcherLiteral, window)
 	if s.logger != nil {
 		s.logger.WithFields(logrus.Fields{
 			"app_id":      appID,

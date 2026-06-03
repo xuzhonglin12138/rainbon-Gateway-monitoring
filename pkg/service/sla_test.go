@@ -85,6 +85,31 @@ func TestSLAServiceComputesAvailabilityFromGateway5xx(t *testing.T) {
 	}
 }
 
+func TestSLAServiceEscapesRegexForPrometheusStringLiteral(t *testing.T) {
+	route := `gr1ea4bc-8080-9tmvzlgs.14.103.233.199.nip.iop-ps-s`
+	routeMatcher := `gr1ea4bc-8080-9tmvzlgs\\.14\\.103\\.233\\.199\\.nip\\.iop-ps-s`
+	client := &fakePrometheusClient{values: map[string]float64{
+		`sum(increase(apisix_http_status{route=~"` + routeMatcher + `"}[5m]))`:             1000,
+		`sum(increase(apisix_http_status{route=~"` + routeMatcher + `",code=~"5.."}[5m]))`: 2,
+	}}
+	service := NewSLAService(SLAConfig{
+		Prometheus: client,
+		Store: fakeSLAStore{
+			config: model.SLAConfig{AppID: "1023", Target: 0.999},
+			routes: []string{route},
+		},
+		Target: 0.999,
+	})
+
+	result, err := service.GetAppSLA(context.Background(), "1023", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetAppSLA() unexpected error: %v", err)
+	}
+	if result.TotalRequests != 1000 {
+		t.Fatalf("total = %v; want 1000", result.TotalRequests)
+	}
+}
+
 func TestSLAServiceReturnsFullAvailabilityWithoutTraffic(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{}}
 	service := NewSLAService(SLAConfig{

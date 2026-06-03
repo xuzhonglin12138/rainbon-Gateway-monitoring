@@ -63,6 +63,30 @@ func TestOverviewServiceGetsAppOverviewWithRouteIndex(t *testing.T) {
 	}
 }
 
+func TestOverviewServiceEscapesRegexForPrometheusStringLiteral(t *testing.T) {
+	route := `gr1ea4bc-8080-9tmvzlgs.14.103.233.199.nip.iop-ps-s`
+	routeMatcher := `gr1ea4bc-8080-9tmvzlgs\\.14\\.103\\.233\\.199\\.nip\\.iop-ps-s`
+	client := &fakePrometheusClient{values: map[string]float64{
+		`sum(increase(apisix_http_status{route=~"` + routeMatcher + `"}[5m]))`:                    200,
+		`sum(increase(apisix_http_status{route=~"` + routeMatcher + `",code=~"5.."}[5m]))`:        1,
+		`sum(rate(apisix_http_latency_sum{route=~"` + routeMatcher + `",type="upstream"}[5m]))`:   100,
+		`sum(rate(apisix_http_latency_count{route=~"` + routeMatcher + `",type="upstream"}[5m]))`: 5,
+		`sum(rate(apisix_bandwidth{route=~"` + routeMatcher + `",type="egress"}[5m]))`:            512,
+	}}
+	service := NewOverviewService(OverviewConfig{
+		Prometheus: client,
+		Store:      fakeSLAStore{routes: []string{route}},
+	})
+
+	overview, err := service.GetAppOverview(context.Background(), "1023", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetAppOverview() unexpected error: %v", err)
+	}
+	if overview.RequestCount != 200 {
+		t.Fatalf("request count = %v; want 200", overview.RequestCount)
+	}
+}
+
 func TestOverviewServiceGetsGatewayRealtimeTrend(t *testing.T) {
 	client := &fakePrometheusClient{
 		ranges: map[string][]promclient.RangeSample{

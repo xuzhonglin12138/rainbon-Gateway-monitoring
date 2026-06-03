@@ -136,15 +136,18 @@ func main() {
 		Prometheus: prometheusClient,
 		Store:      redisStore,
 		Target:     envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
+		Logger:     logger,
 	})
 	overviewService := service.NewOverviewService(service.OverviewConfig{
 		Prometheus: prometheusClient,
 		Store:      redisStore,
+		Logger:     logger,
 	})
 	collector := service.NewInternalRouteCollector(service.CollectorConfig{
 		Store:           redisStore,
 		Mapper:          redisStore,
 		RouteGroupRules: redisStore,
+		Logger:          logger,
 		RouteGroups: service.NewRouteGroupResolver(service.RouteGroupConfig{
 			MaxGroupsPerScope: envInt("NM_ROUTE_GROUP_LIMIT", 100),
 			TemplateRules: []service.RouteGroupRule{

@@ -10,12 +10,14 @@ import (
 
 	promclient "github.com/goodrain/rainbond-plugin-template/pkg/clients/prometheus"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	"github.com/sirupsen/logrus"
 )
 
 type OverviewConfig struct {
 	Prometheus PrometheusQueryClient
 	Store      routeIndexStore
 	Now        func() time.Time
+	Logger     *logrus.Logger
 }
 
 type routeIndexStore interface {
@@ -26,6 +28,7 @@ type OverviewService struct {
 	prometheus PrometheusQueryClient
 	store      routeIndexStore
 	now        func() time.Time
+	logger     *logrus.Logger
 }
 
 type PrometheusQueryClient interface {
@@ -38,7 +41,7 @@ func NewOverviewService(cfg OverviewConfig) *OverviewService {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, now: cfg.Now}
+	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, now: cfg.Now, logger: cfg.Logger}
 }
 
 func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error) {
@@ -50,6 +53,9 @@ func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, wind
 	if err != nil {
 		return model.Overview{}, err
 	}
+	s.logQueryContext("app overview route matcher resolved", model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window, logrus.Fields{
+		"route_matcher": routeMatcher,
+	})
 	return s.gatewayOverview(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, routeMatcher, window)
 }
 
@@ -257,23 +263,37 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	selectorWithCode := metricSelector(routeLabel, `code=~"5.."`)
 	latencySelector := metricSelector(routeLabel, `type="upstream"`)
 	egressSelector := metricSelector(routeLabel, `type="egress"`)
-	total, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(increase(apisix_http_status%s[%s]))`, selector, window))
+	totalQuery := fmt.Sprintf(`sum(increase(apisix_http_status%s[%s]))`, selector, window)
+	errorQuery := fmt.Sprintf(`sum(increase(apisix_http_status%s[%s]))`, selectorWithCode, window)
+	latencySumQuery := fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[%s]))`, latencySelector, window)
+	latencyCountQuery := fmt.Sprintf(`sum(rate(apisix_http_latency_count%s[%s]))`, latencySelector, window)
+	egressQuery := fmt.Sprintf(`sum(rate(apisix_bandwidth%s[%s]))`, egressSelector, window)
+	s.logQueryContext("querying gateway overview prometheus metrics", scope, window, logrus.Fields{
+		"route_matcher": routeMatcher,
+		"selector":      selector,
+	})
+	s.logPrometheusQuery("gateway overview request count query", scope, totalQuery)
+	total, err := s.prometheus.QueryScalar(ctx, totalQuery)
 	if err != nil {
 		return model.Overview{}, err
 	}
-	errors, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(increase(apisix_http_status%s[%s]))`, selectorWithCode, window))
+	s.logPrometheusQuery("gateway overview error count query", scope, errorQuery)
+	errors, err := s.prometheus.QueryScalar(ctx, errorQuery)
 	if err != nil {
 		return model.Overview{}, err
 	}
-	latencySum, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[%s]))`, latencySelector, window))
+	s.logPrometheusQuery("gateway overview latency sum query", scope, latencySumQuery)
+	latencySum, err := s.prometheus.QueryScalar(ctx, latencySumQuery)
 	if err != nil {
 		return model.Overview{}, err
 	}
-	latencyCount, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_count%s[%s]))`, latencySelector, window))
+	s.logPrometheusQuery("gateway overview latency count query", scope, latencyCountQuery)
+	latencyCount, err := s.prometheus.QueryScalar(ctx, latencyCountQuery)
 	if err != nil {
 		return model.Overview{}, err
 	}
-	egress, err := s.prometheus.QueryScalar(ctx, fmt.Sprintf(`sum(rate(apisix_bandwidth%s[%s]))`, egressSelector, window))
+	s.logPrometheusQuery("gateway overview egress query", scope, egressQuery)
+	egress, err := s.prometheus.QueryScalar(ctx, egressQuery)
 	if err != nil {
 		return model.Overview{}, err
 	}
@@ -351,16 +371,48 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 func (s *OverviewService) appRouteMatcher(ctx context.Context, appID string) (string, error) {
 	routeMatcher := regexp.QuoteMeta(appID) + ".*"
 	if s.store == nil {
+		s.logQueryContext("using fallback app route matcher because route index store is nil", model.AggregateScope{Kind: model.ScopeApp, ID: appID}, "", logrus.Fields{
+			"route_matcher": routeMatcher,
+		})
 		return routeMatcher, nil
 	}
 	routes, err := s.store.GetAppPrometheusRoutes(ctx, appID)
 	if err != nil {
 		return "", err
 	}
+	s.logQueryContext("loaded app prometheus routes from route index", model.AggregateScope{Kind: model.ScopeApp, ID: appID}, "", logrus.Fields{
+		"route_count": len(routes),
+		"routes":      strings.Join(routes, ","),
+	})
 	if len(routes) > 0 {
 		routeMatcher = prometheusRouteMatcher(routes)
 	}
 	return routeMatcher, nil
+}
+
+func (s *OverviewService) logQueryContext(message string, scope model.AggregateScope, window model.Window, fields logrus.Fields) {
+	if s.logger == nil {
+		return
+	}
+	entry := s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+	})
+	if window != "" {
+		entry = entry.WithField("window", window)
+	}
+	entry.WithFields(fields).Info(message)
+}
+
+func (s *OverviewService) logPrometheusQuery(message string, scope model.AggregateScope, query string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+		"query":      query,
+	}).Debug(message)
 }
 
 func prometheusRouteLabel(routeMatcher string) string {

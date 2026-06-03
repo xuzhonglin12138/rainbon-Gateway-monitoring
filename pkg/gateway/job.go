@@ -103,17 +103,55 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("route client is required")
 	}
 	for _, namespace := range j.Namespaces {
+		if j.Logger != nil {
+			j.Logger.WithFields(logrus.Fields{
+				"namespace":      namespace,
+				"match_app_id":   j.AppID,
+				"mapping_app_id": j.MappingAppID,
+				"collector_uri":  j.Config.URI,
+			}).Info("syncing apisix routes for http-logger")
+		}
 		routes, err := j.Client.List(ctx, namespace)
 		if err != nil {
 			return fmt.Errorf("list apisix routes in %s: %w", namespace, err)
 		}
+		if j.Logger != nil {
+			j.Logger.WithFields(logrus.Fields{
+				"namespace":      namespace,
+				"match_app_id":   j.AppID,
+				"mapping_app_id": j.MappingAppID,
+				"route_count":    len(routes),
+			}).Info("scanned apisix routes for http-logger")
+		}
 		for _, route := range routes {
-			if !j.matchesApp(route) {
+			matched := j.matchesApp(route)
+			if j.Logger != nil && route != nil {
+				labels := route.GetLabels()
+				j.Logger.WithFields(logrus.Fields{
+					"namespace":        namespace,
+					"route":            route.GetName(),
+					"label_app_id":     labels["app_id"],
+					"label_creator":    labels["creator"],
+					"label_service_id": firstLabel(labels, "service_id", "component_id"),
+					"matched":          matched,
+					"rainbond_managed": IsRainbondManagedRoute(route),
+				}).Debug("checked apisix route for http-logger")
+			}
+			if !matched {
 				continue
 			}
 			changed, err := EnsureHTTPLoggerPlugin(route, j.Config)
 			if err != nil {
 				return fmt.Errorf("ensure http logger for %s/%s: %w", namespace, route.GetName(), err)
+			}
+			if j.Logger != nil {
+				j.Logger.WithFields(logrus.Fields{
+					"namespace":      namespace,
+					"route":          route.GetName(),
+					"changed":        changed,
+					"collector_uri":  j.Config.URI,
+					"mapping_app_id": j.MappingAppID,
+				}).Info("ensured route-level http-logger")
 			}
 			if !changed {
 				if err := j.saveMappings(ctx, namespace, route); err != nil {
@@ -128,7 +166,11 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 				return err
 			}
 			if j.Logger != nil {
-				j.Logger.WithFields(logrus.Fields{"namespace": namespace, "route": route.GetName()}).Info("attached route-level http-logger")
+				j.Logger.WithFields(logrus.Fields{
+					"namespace":     namespace,
+					"route":         route.GetName(),
+					"collector_uri": j.Config.URI,
+				}).Info("attached route-level http-logger")
 			}
 		}
 	}
@@ -168,15 +210,39 @@ func (j *HTTPLoggerAttachJob) Start(ctx context.Context) {
 
 func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string, route *unstructured.Unstructured) error {
 	if j.MappingStore == nil {
+		if j.Logger != nil && route != nil {
+			j.Logger.WithFields(logrus.Fields{
+				"namespace": namespace,
+				"route":     route.GetName(),
+			}).Debug("skip saving apisix route mappings because mapping store is nil")
+		}
 		return nil
 	}
 	mappings := RouteMappingsFromApisixRoute(namespace, route)
+	if j.Logger != nil && route != nil {
+		j.Logger.WithFields(logrus.Fields{
+			"namespace":     namespace,
+			"route":         route.GetName(),
+			"mapping_count": len(mappings),
+		}).Info("generated apisix route mappings")
+	}
 	for _, mapping := range mappings {
 		if j.MappingAppID != "" {
 			mapping.AppID = j.MappingAppID
 		}
 		if err := j.MappingStore.SaveRouteMapping(ctx, mapping, 10*time.Minute); err != nil {
 			return fmt.Errorf("save route mapping %s: %w", mapping.RouteID, err)
+		}
+		if j.Logger != nil {
+			j.Logger.WithFields(logrus.Fields{
+				"namespace":        namespace,
+				"route_id":         mapping.RouteID,
+				"prometheus_route": mapping.PrometheusRoute,
+				"team_id":          mapping.TeamID,
+				"app_id":           mapping.AppID,
+				"component_id":     mapping.ComponentID,
+				"service_alias":    mapping.ServiceAlias,
+			}).Info("saved apisix route mapping")
 		}
 	}
 	return nil

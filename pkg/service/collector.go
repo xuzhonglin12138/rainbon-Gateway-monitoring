@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	"github.com/sirupsen/logrus"
 )
 
 type AggregateStore interface {
@@ -26,6 +27,7 @@ type CollectorConfig struct {
 	RouteGroups     *RouteGroupResolver
 	RouteGroupRules RouteGroupRuleStore
 	Now             func() time.Time
+	Logger          *logrus.Logger
 }
 
 type InternalRouteCollector struct {
@@ -34,6 +36,7 @@ type InternalRouteCollector struct {
 	routeGroups     *RouteGroupResolver
 	routeGroupRules RouteGroupRuleStore
 	now             func() time.Time
+	logger          *logrus.Logger
 }
 
 func NewInternalRouteCollector(cfg CollectorConfig) *InternalRouteCollector {
@@ -49,6 +52,7 @@ func NewInternalRouteCollector(cfg CollectorConfig) *InternalRouteCollector {
 		routeGroups:     cfg.RouteGroups,
 		routeGroupRules: cfg.RouteGroupRules,
 		now:             cfg.Now,
+		logger:          cfg.Logger,
 	}
 }
 
@@ -61,12 +65,31 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 	}
 
 	bucket := model.AlignBucket(c.now())
+	if c.logger != nil {
+		c.logger.WithFields(logrus.Fields{
+			"log_count":   len(logs),
+			"bucket_unix": bucket,
+		}).Info("collecting apisix access logs")
+	}
 	for _, log := range logs {
 		if log.RouteID == "" && log.ServiceID == "" {
+			if c.logger != nil {
+				c.logger.WithFields(logrus.Fields{
+					"uri":    chooseURI(log),
+					"status": log.Status,
+				}).Debug("skip apisix access log without route_id and service_id")
+			}
 			continue
 		}
 		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteID, log.ServiceID)
 		if err != nil {
+			if c.logger != nil {
+				c.logger.WithError(err).WithFields(logrus.Fields{
+					"route_id":   log.RouteID,
+					"service_id": log.ServiceID,
+					"uri":        chooseURI(log),
+				}).Warn("resolve apisix route mapping failed")
+			}
 			mapping = model.RouteMapping{
 				RouteID:     log.RouteID,
 				TeamID:      "unknown_team",
@@ -76,6 +99,20 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		}
 		routeGroup := c.resolveRouteGroup(ctx, mapping, log)
 		metric := metricFromLog(routeGroup, mapping, log)
+		if c.logger != nil {
+			c.logger.WithFields(logrus.Fields{
+				"route_id":        log.RouteID,
+				"service_id":      log.ServiceID,
+				"route_group":     routeGroup,
+				"team_id":         mapping.TeamID,
+				"app_id":          mapping.AppID,
+				"component_id":    mapping.ComponentID,
+				"service_alias":   mapping.ServiceAlias,
+				"status":          log.Status,
+				"upstream_status": log.UpstreamStatus,
+				"request_time":    log.RequestTime,
+			}).Debug("mapped apisix access log")
+		}
 		for _, window := range model.HotWindows() {
 			for _, scope := range scopesForMapping(mapping) {
 				if err := c.store.AddRouteGroupBucket(ctx, scope, window, bucket, metric); err != nil {

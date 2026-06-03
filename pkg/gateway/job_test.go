@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	"github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -101,5 +103,53 @@ func TestHTTPLoggerAttachJobStoresConsoleAppIDWhenMatchingRegionAppID(t *testing
 		if appID != "console-app-a" {
 			t.Fatalf("saved mapping app_id = %q; want console-app-a", appID)
 		}
+	}
+}
+
+func TestHTTPLoggerAttachJobLogsRouteScanAndMappingSave(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name":   "route-a",
+			"labels": map[string]interface{}{"creator": "Rainbond", "app_id": "region-app-a"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{map[string]interface{}{"name": "http-a"}},
+		},
+	}}
+	logger, hook := logtest.NewNullLogger()
+	logger.SetLevel(logrus.DebugLevel)
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:       client,
+		MappingStore: store,
+		Namespaces:   []string{"tenant-ns"},
+		AppID:        "region-app-a",
+		MappingAppID: "console-app-a",
+		Config:       HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+		Logger:       logger,
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+
+	if len(hook.Entries) == 0 {
+		t.Fatal("log entries length = 0; want diagnostic logs")
+	}
+	var sawScan, sawMapping bool
+	for _, entry := range hook.Entries {
+		switch entry.Message {
+		case "scanned apisix routes for http-logger":
+			sawScan = sawScan || (entry.Data["namespace"] == "tenant-ns" && entry.Data["route_count"] == 1)
+		case "saved apisix route mapping":
+			sawMapping = sawMapping || (entry.Data["route_id"] == "route-a" && entry.Data["app_id"] == "console-app-a")
+		}
+	}
+	if !sawScan {
+		t.Fatalf("missing route scan log; entries=%#v", hook.Entries)
+	}
+	if !sawMapping {
+		t.Fatalf("missing route mapping log; entries=%#v", hook.Entries)
 	}
 }

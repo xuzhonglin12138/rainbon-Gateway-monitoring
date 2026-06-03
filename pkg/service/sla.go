@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	"github.com/sirupsen/logrus"
 )
 
 type PrometheusScalarClient interface {
@@ -17,6 +18,7 @@ type SLAConfig struct {
 	Prometheus PrometheusScalarClient
 	Store      SLAStore
 	Target     float64
+	Logger     *logrus.Logger
 }
 
 type SLAStore interface {
@@ -28,13 +30,14 @@ type SLAService struct {
 	prometheus PrometheusScalarClient
 	store      SLAStore
 	target     float64
+	logger     *logrus.Logger
 }
 
 func NewSLAService(cfg SLAConfig) *SLAService {
 	if cfg.Target <= 0 {
 		cfg.Target = 0.999
 	}
-	return &SLAService{prometheus: cfg.Prometheus, store: cfg.Store, target: cfg.Target}
+	return &SLAService{prometheus: cfg.Prometheus, store: cfg.Store, target: cfg.Target, logger: cfg.Logger}
 }
 
 func (s *SLAService) GetAppSLA(ctx context.Context, appID string, window model.Window) (model.SLAStatus, error) {
@@ -56,9 +59,34 @@ func (s *SLAService) GetAppSLA(ctx context.Context, appID string, window model.W
 		if len(routes) > 0 {
 			routeMatcher = prometheusRouteMatcher(routes)
 		}
+		if s.logger != nil {
+			s.logger.WithFields(logrus.Fields{
+				"app_id":        appID,
+				"window":        window,
+				"route_count":   len(routes),
+				"routes":        strings.Join(routes, ","),
+				"route_matcher": routeMatcher,
+				"target":        target,
+			}).Info("resolved app sla route matcher")
+		}
+	} else if s.logger != nil {
+		s.logger.WithFields(logrus.Fields{
+			"app_id":        appID,
+			"window":        window,
+			"route_matcher": routeMatcher,
+			"target":        target,
+		}).Info("using fallback app sla route matcher because store is nil")
 	}
 	totalQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s"}[%s]))`, routeMatcher, window)
 	errorQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s",code=~"5.."}[%s]))`, routeMatcher, window)
+	if s.logger != nil {
+		s.logger.WithFields(logrus.Fields{
+			"app_id":      appID,
+			"window":      window,
+			"total_query": totalQuery,
+			"error_query": errorQuery,
+		}).Debug("querying app sla prometheus metrics")
+	}
 
 	total, err := s.prometheus.QueryScalar(ctx, totalQuery)
 	if err != nil {

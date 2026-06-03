@@ -213,8 +213,11 @@ func (s *Server) handleCollectApisixLogs(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "collector batch is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"log_count": len(logs),
+	}).Info("received apisix access logs")
 	if err := s.collector.Collect(r.Context(), logs); err != nil {
-		s.logger.WithError(err).Warn("collect apisix logs failed")
+		s.logger.WithError(err).WithField("log_count", len(logs)).Warn("collect apisix logs failed")
 		http.Error(w, "collect logs failed", http.StatusInternalServerError)
 		return
 	}
@@ -257,9 +260,12 @@ func (s *Server) handlePlatformNodeSummary(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"window": window,
+	}).Info("querying platform node summaries")
 	nodes, err := s.overviewService.GetPlatformNodeSummaries(r.Context(), window)
 	if err != nil {
-		s.logger.WithError(err).Warn("get platform node summaries failed")
+		s.logger.WithError(err).WithField("window", window).Warn("get platform node summaries failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     []model.PlatformNodeSummary{},
 			"warnings": []string{"prometheus node summary query is unavailable"},
@@ -297,9 +303,16 @@ func (s *Server) handlePlatformNodeRoutes(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"node":   id,
+		"window": window,
+	}).Info("querying platform node detail")
 	detail, err := s.overviewService.GetPlatformNodeDetail(r.Context(), id, window)
 	if err != nil {
-		s.logger.WithError(err).Warn("get platform node detail failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"node":   id,
+			"window": window,
+		}).Warn("get platform node detail failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     nil,
 			"warnings": []string{"prometheus node detail query is unavailable"},
@@ -399,9 +412,16 @@ func (s *Server) handleAppSLA(w http.ResponseWriter, r *http.Request, appID stri
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"app_id": appID,
+		"window": window,
+	}).Info("querying app sla")
 	status, err := s.slaService.GetAppSLA(r.Context(), appID, window)
 	if err != nil {
-		s.logger.WithError(err).Warn("get app sla failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"app_id": appID,
+			"window": window,
+		}).Warn("get app sla failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     nil,
 			"warnings": []string{"prometheus sla query is unavailable"},
@@ -431,9 +451,10 @@ func (s *Server) handleAppSLAConfig(w http.ResponseWriter, r *http.Request, appI
 	}
 	switch r.Method {
 	case http.MethodGet:
+		s.logger.WithField("app_id", appID).Info("querying app sla config")
 		cfg, err := s.configStore.GetSLAConfig(r.Context(), appID, s.defaultSLATarget)
 		if err != nil {
-			s.logger.WithError(err).Warn("get sla config failed")
+			s.logger.WithError(err).WithField("app_id", appID).Warn("get sla config failed")
 			http.Error(w, "get sla config failed", http.StatusServiceUnavailable)
 			return
 		}
@@ -449,8 +470,15 @@ func (s *Server) handleAppSLAConfig(w http.ResponseWriter, r *http.Request, appI
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "target must be in (0,1]"})
 			return
 		}
+		s.logger.WithFields(logrus.Fields{
+			"app_id": appID,
+			"target": payload.Target,
+		}).Info("saving app sla config")
 		if err := s.configStore.SaveSLAConfig(r.Context(), payload); err != nil {
-			s.logger.WithError(err).Warn("save sla config failed")
+			s.logger.WithError(err).WithFields(logrus.Fields{
+				"app_id": appID,
+				"target": payload.Target,
+			}).Warn("save sla config failed")
 			http.Error(w, "save sla config failed", http.StatusServiceUnavailable)
 			return
 		}
@@ -491,6 +519,11 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	if syncAppID == "" {
 		syncAppID = appID
 	}
+	s.logger.WithFields(logrus.Fields{
+		"namespace":     payload.Namespace,
+		"app_id":        appID,
+		"region_app_id": syncAppID,
+	}).Info("syncing app route-level http-logger")
 	var err error
 	if appSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppSyncer); ok {
 		err = appSyncer.SyncHTTPLoggerForApp(r.Context(), payload.Namespace, syncAppID, appID)
@@ -498,10 +531,19 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 		err = s.httpLoggerSyncer.SyncHTTPLogger(r.Context(), payload.Namespace, syncAppID)
 	}
 	if err != nil {
-		s.logger.WithError(err).Warn("sync app http logger failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"namespace":     payload.Namespace,
+			"app_id":        appID,
+			"region_app_id": syncAppID,
+		}).Warn("sync app http logger failed")
 		http.Error(w, "sync app http logger failed", http.StatusServiceUnavailable)
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"namespace":     payload.Namespace,
+		"app_id":        appID,
+		"region_app_id": syncAppID,
+	}).Info("synced app route-level http-logger")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]string{
 			"namespace":     payload.Namespace,
@@ -550,6 +592,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, scope mo
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+		"window":     window,
+	}).Info("querying overview")
 	var overview model.Overview
 	switch scope.Kind {
 	case model.ScopePlatform:
@@ -562,7 +609,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, scope mo
 		err = fmt.Errorf("unsupported overview scope %s", scope.Kind)
 	}
 	if err != nil {
-		s.logger.WithError(err).Warn("get overview failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"scope_kind": scope.Kind,
+			"scope_id":   scope.ID,
+			"window":     window,
+		}).Warn("get overview failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     nil,
 			"warnings": []string{"prometheus overview query is unavailable"},
@@ -594,6 +645,11 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
 		return
 	}
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+		"window":     model.Window5m,
+	}).Info("querying overview trend")
 	var (
 		trend model.OverviewTrend
 		err   error
@@ -609,7 +665,11 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 		err = fmt.Errorf("unsupported overview trend scope %s", scope.Kind)
 	}
 	if err != nil {
-		s.logger.WithError(err).Warn("get overview trend failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"scope_kind": scope.Kind,
+			"scope_id":   scope.ID,
+			"window":     model.Window5m,
+		}).Warn("get overview trend failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     model.OverviewTrend{Scope: scope, Window: model.Window5m, Points: []model.OverviewTrendPoint{}},
 			"warnings": []string{"prometheus overview trend query is unavailable"},
@@ -639,9 +699,10 @@ func (s *Server) handleAppRouteGroupRules(w http.ResponseWriter, r *http.Request
 	}
 	switch r.Method {
 	case http.MethodGet:
+		s.logger.WithField("app_id", appID).Info("querying app route group rules")
 		rules, err := s.configStore.GetRouteGroupRules(r.Context(), appID)
 		if err != nil {
-			s.logger.WithError(err).Warn("get route group rules failed")
+			s.logger.WithError(err).WithField("app_id", appID).Warn("get route group rules failed")
 			http.Error(w, "get route group rules failed", http.StatusServiceUnavailable)
 			return
 		}
@@ -661,8 +722,15 @@ func (s *Server) handleAppRouteGroupRules(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 			return
 		}
+		s.logger.WithFields(logrus.Fields{
+			"app_id":     appID,
+			"rule_count": len(payload.Rules),
+		}).Info("saving app route group rules")
 		if err := s.configStore.SaveRouteGroupRules(r.Context(), appID, payload.Rules); err != nil {
-			s.logger.WithError(err).Warn("save route group rules failed")
+			s.logger.WithError(err).WithFields(logrus.Fields{
+				"app_id":     appID,
+				"rule_count": len(payload.Rules),
+			}).Warn("save route group rules failed")
 			http.Error(w, "save route group rules failed", http.StatusServiceUnavailable)
 			return
 		}
@@ -692,9 +760,18 @@ func (s *Server) handleAppComponentSummary(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	limit := parseLimit(r.URL.Query().Get("limit"), 50)
+	s.logger.WithFields(logrus.Fields{
+		"app_id": appID,
+		"window": window,
+		"limit":  limit,
+	}).Info("querying app component summaries")
 	items, err := store.ListAppComponentSummaries(r.Context(), appID, window, limit)
 	if err != nil {
-		s.logger.WithError(err).Warn("list app component summaries failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"app_id": appID,
+			"window": window,
+			"limit":  limit,
+		}).Warn("list app component summaries failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     []model.AppComponentSummary{},
 			"warnings": []string{"redis app component summary is unavailable"},
@@ -728,9 +805,22 @@ func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope m
 		return
 	}
 	limit := parseLimit(r.URL.Query().Get("limit"), 50)
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+		"window":     window,
+		"limit":      limit,
+		"sort_by":    sortBy,
+	}).Info("querying route group top")
 	items, err := s.queryStore.ListRouteGroups(r.Context(), scope, window, limit, sortBy)
 	if err != nil {
-		s.logger.WithError(err).Warn("list route group top failed")
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"scope_kind": scope.Kind,
+			"scope_id":   scope.ID,
+			"window":     window,
+			"limit":      limit,
+			"sort_by":    sortBy,
+		}).Warn("list route group top failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
 			"data":     []model.RouteGroupItem{},
 			"warnings": []string{"redis route group snapshot is unavailable"},

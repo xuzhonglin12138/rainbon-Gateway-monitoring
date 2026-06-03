@@ -125,6 +125,7 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 		}
 		for _, route := range routes {
 			matched := j.matchesApp(route)
+			managed := IsRainbondManagedRoute(route)
 			if j.Logger != nil && route != nil {
 				labels := route.GetLabels()
 				j.Logger.WithFields(logrus.Fields{
@@ -134,8 +135,8 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 					"label_creator":    labels["creator"],
 					"label_service_id": firstLabel(labels, "service_id", "component_id"),
 					"matched":          matched,
-					"rainbond_managed": IsRainbondManagedRoute(route),
-				}).Debug("checked apisix route for http-logger")
+					"rainbond_managed": managed,
+				}).Info("checked apisix route for http-logger")
 			}
 			if !matched {
 				continue

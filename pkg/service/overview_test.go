@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -120,6 +121,45 @@ func TestOverviewServiceGetsGatewayRealtimeTrend(t *testing.T) {
 	}
 	if math.Abs(trend.Points[1].AvgLatencyMs-20) > 0.000001 {
 		t.Fatalf("latency = %v; want 20", trend.Points[1].AvgLatencyMs)
+	}
+}
+
+func TestOverviewServiceSanitizesNonFiniteRealtimeTrendValues(t *testing.T) {
+	client := &fakePrometheusClient{
+		ranges: map[string][]promclient.RangeSample{
+			`sum(rate(apisix_http_status[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 2}}},
+			},
+			`sum(rate(apisix_http_status{code=~"5.."}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 0}}},
+			},
+			`sum(rate(apisix_http_latency_sum{type="upstream"}[1m])) / sum(rate(apisix_http_latency_count{type="upstream"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: math.Inf(1)}}},
+			},
+			`sum(rate(apisix_bandwidth{type="egress"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: math.NaN()}}},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{Prometheus: client, Now: func() time.Time {
+		return time.Unix(400, 0)
+	}})
+
+	trend, err := service.GetPlatformRealtimeTrend(context.Background())
+	if err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	if len(trend.Points) != 1 {
+		t.Fatalf("points length = %d; want 1", len(trend.Points))
+	}
+	if trend.Points[0].AvgLatencyMs != 0 {
+		t.Fatalf("latency = %v; want sanitized 0", trend.Points[0].AvgLatencyMs)
+	}
+	if trend.Points[0].EgressBytesPerSec != 0 {
+		t.Fatalf("egress = %v; want sanitized 0", trend.Points[0].EgressBytesPerSec)
+	}
+	if _, err := json.Marshal(trend); err != nil {
+		t.Fatalf("marshal trend unexpected error: %v", err)
 	}
 }
 

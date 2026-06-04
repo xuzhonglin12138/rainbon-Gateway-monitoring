@@ -11,6 +11,7 @@ import (
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/license"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 type fakeConfigStore struct {
@@ -317,6 +318,41 @@ func TestServerIncludesRouteGroupSnapshotFreshnessMeta(t *testing.T) {
 	if body.Meta.FreshnessSeconds != 33 || !body.Meta.Stale {
 		t.Fatalf("meta = %#v; want freshness 33 stale true", body.Meta)
 	}
+}
+
+func TestServerLogsRouteGroupTopResultDiagnostics(t *testing.T) {
+	logger, hook := logtest.NewNullLogger()
+	server := New(Config{
+		Logger: logger,
+		QueryStore: fakeRouteGroupQueryStore{
+			items: []model.RouteGroupItem{{RouteGroup: "/api/orders/*", RequestCount: 3}},
+			meta:  model.QueryMeta{Window: model.Window5m, FreshnessSeconds: 33, Stale: true},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/apps/app-a/internal-routes/top-errors?window=5m", nil)
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+
+	for _, entry := range hook.Entries {
+		if entry.Message != "listed route group top" {
+			continue
+		}
+		if entry.Data["item_count"] != 1 {
+			t.Fatalf("item_count = %v; want 1", entry.Data["item_count"])
+		}
+		if entry.Data["stale"] != true {
+			t.Fatalf("stale = %v; want true", entry.Data["stale"])
+		}
+		if entry.Data["freshness_seconds"] != int64(33) {
+			t.Fatalf("freshness_seconds = %v; want 33", entry.Data["freshness_seconds"])
+		}
+		return
+	}
+	t.Fatalf("missing route group result log; entries=%#v", hook.Entries)
 }
 
 func TestServerHandlesAppComponentSummary(t *testing.T) {

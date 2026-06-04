@@ -851,6 +851,17 @@ func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope m
 			meta = snapshotMeta
 		}
 	}
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind":        scope.Kind,
+		"scope_id":          scope.ID,
+		"window":            window,
+		"limit":             limit,
+		"sort_by":           sortBy,
+		"item_count":        len(items),
+		"partial":           meta.Partial,
+		"stale":             meta.Stale,
+		"freshness_seconds": meta.FreshnessSeconds,
+	}).Info("listed route group top")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":     items,
 		"meta":     meta,

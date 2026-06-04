@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -445,10 +446,17 @@ func rangeValuesByTimestamp(samples []promclient.RangeSample) map[int64]float64 
 	values := map[int64]float64{}
 	for _, sample := range samples {
 		for _, point := range sample.Values {
+			if !finiteFloat(point.Value) {
+				continue
+			}
 			values[point.Timestamp] += point.Value
 		}
 	}
 	return values
+}
+
+func finiteFloat(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func sortedTimestamps(series ...map[int64]float64) []int64 {

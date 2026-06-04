@@ -204,8 +204,19 @@ func (s *Server) handleCollectApisixLogs(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	s.logger.WithFields(logrus.Fields{
+		"remote_addr":    r.RemoteAddr,
+		"content_type":   r.Header.Get("Content-Type"),
+		"content_length": r.ContentLength,
+		"user_agent":     r.UserAgent(),
+	}).Info("receiving apisix access logs")
 	logs, err := decodeAccessLogs(http.MaxBytesReader(w, r.Body, maxCollectorBodyBytes))
 	if err != nil {
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"remote_addr":    r.RemoteAddr,
+			"content_type":   r.Header.Get("Content-Type"),
+			"content_length": r.ContentLength,
+		}).Warn("decode apisix access logs failed")
 		if isRequestBodyTooLarge(err.Error()) {
 			http.Error(w, "collector payload is too large", http.StatusRequestEntityTooLarge)
 			return

@@ -85,6 +85,9 @@ func (s *RedisStore) ListRouteGroups(ctx context.Context, scope model.AggregateS
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil, err
 	}
+	if items == nil {
+		items = []model.RouteGroupItem{}
+	}
 	if len(items) > limit {
 		items = items[:limit]
 	}
@@ -239,6 +242,9 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 }
 
 func (s *RedisStore) saveSnapshot(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string, items []model.RouteGroupItem) error {
+	if items == nil {
+		items = []model.RouteGroupItem{}
+	}
 	payload, err := json.Marshal(items)
 	if err != nil {
 		return err

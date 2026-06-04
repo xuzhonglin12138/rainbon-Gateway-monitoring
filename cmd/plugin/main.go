@@ -164,8 +164,10 @@ func main() {
 	snapshotJob.Start(ctx)
 
 	routeClient := gateway.NewDynamicRouteClient(dynamicClient)
+	collectorURI := collectorURIFromEnv()
+	logger.WithField("collector_uri", collectorURI).Info("resolved apisix http-logger collector uri")
 	httpLoggerConfig := gateway.HTTPLoggerConfig{
-		URI:       envOrDefault("NM_COLLECTOR_URI", DefaultCollectorURI),
+		URI:       collectorURI,
 		Timeout:   envInt("NM_HTTP_LOGGER_TIMEOUT_SECONDS", DefaultHTTPLoggerTimeout),
 		SSLVerify: envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
 	}
@@ -237,6 +239,26 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func collectorURIFromEnv() string {
+	configured := os.Getenv("NM_COLLECTOR_URI")
+	if configured != "" && configured != DefaultCollectorURI {
+		return configured
+	}
+	if service := os.Getenv("_SERVICE_ALIAS"); service != "" {
+		if namespace := os.Getenv("_NAMESPACE"); namespace != "" {
+			port := os.Getenv("HTTP_8080_PORT")
+			if port == "" {
+				port = "8080"
+			}
+			return "http://" + service + "." + namespace + ".svc:" + port + CollectorPath
+		}
+	}
+	if configured != "" {
+		return configured
+	}
+	return DefaultCollectorURI
 }
 
 func envInt(key string, fallback int) int {

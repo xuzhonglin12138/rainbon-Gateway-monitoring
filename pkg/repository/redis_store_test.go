@@ -172,6 +172,22 @@ func TestRedisStoreListRouteGroupsReadsSnapshot(t *testing.T) {
 	}
 }
 
+func TestRedisStoreListRouteGroupsNormalizesNullSnapshotToEmptyList(t *testing.T) {
+	client := &fakeRedisClient{get: `null`}
+	store := NewRedisStore(client)
+
+	items, err := store.ListRouteGroups(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "app-a"}, model.Window5m, 50, "summary")
+	if err != nil {
+		t.Fatalf("ListRouteGroups() unexpected error: %v", err)
+	}
+	if items == nil {
+		t.Fatal("items is nil; want empty slice")
+	}
+	if len(items) != 0 {
+		t.Fatalf("items length = %d; want 0", len(items))
+	}
+}
+
 func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		keys: []interface{}{

@@ -136,11 +136,24 @@ func (s AggregateScope) RedisPart() string {
 type RouteMapping struct {
 	RouteID         string `json:"route_id"`
 	TeamID          string `json:"team_id"`
+	TeamName        string `json:"team_name,omitempty"`
+	TeamAlias       string `json:"team_alias,omitempty"`
 	AppID           string `json:"app_id"`
+	RegionAppID     string `json:"region_app_id,omitempty"`
+	AppName         string `json:"app_name,omitempty"`
+	RegionName      string `json:"region_name,omitempty"`
 	ComponentID     string `json:"component_id"`
 	ServiceAlias    string `json:"service_alias"`
 	Namespace       string `json:"namespace"`
 	PrometheusRoute string `json:"prometheus_route"`
+}
+
+type RouteMappingMetadata struct {
+	RegionName  string `json:"region_name,omitempty"`
+	RegionAppID string `json:"region_app_id,omitempty"`
+	TeamName    string `json:"team_name,omitempty"`
+	TeamAlias   string `json:"team_alias,omitempty"`
+	AppName     string `json:"app_name,omitempty"`
 }
 
 type RouteGroupMetric struct {
@@ -152,7 +165,12 @@ type RouteGroupMetric struct {
 	LatencyCount       int64   `json:"latency_count"`
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
+	TeamName           string  `json:"team_name,omitempty"`
+	TeamAlias          string  `json:"team_alias,omitempty"`
 	Namespace          string  `json:"namespace,omitempty"`
+	RegionAppID        string  `json:"region_app_id,omitempty"`
+	AppName            string  `json:"app_name,omitempty"`
+	RegionName         string  `json:"region_name,omitempty"`
 	ComponentID        string  `json:"component_id,omitempty"`
 	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
@@ -188,7 +206,12 @@ type RouteGroupItem struct {
 	AvgLatencyMs       float64 `json:"avg_latency_ms"`
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
+	TeamName           string  `json:"team_name,omitempty"`
+	TeamAlias          string  `json:"team_alias,omitempty"`
 	Namespace          string  `json:"namespace,omitempty"`
+	RegionAppID        string  `json:"region_app_id,omitempty"`
+	AppName            string  `json:"app_name,omitempty"`
+	RegionName         string  `json:"region_name,omitempty"`
 	ComponentID        string  `json:"component_id,omitempty"`
 	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
@@ -204,7 +227,12 @@ func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 		AvgLatencyMs:       metric.AvgLatencyMs(),
 		AppID:              metric.AppID,
 		TeamID:             metric.TeamID,
+		TeamName:           metric.TeamName,
+		TeamAlias:          metric.TeamAlias,
 		Namespace:          metric.Namespace,
+		RegionAppID:        metric.RegionAppID,
+		AppName:            metric.AppName,
+		RegionName:         metric.RegionName,
 		ComponentID:        metric.ComponentID,
 		ServiceAlias:       metric.ServiceAlias,
 	}
@@ -213,7 +241,12 @@ func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 type AppTrafficItem struct {
 	AppID               string  `json:"app_id"`
 	TeamID              string  `json:"team_id,omitempty"`
+	TeamName            string  `json:"team_name,omitempty"`
+	TeamAlias           string  `json:"team_alias,omitempty"`
 	Namespace           string  `json:"namespace,omitempty"`
+	RegionAppID         string  `json:"region_app_id,omitempty"`
+	AppName             string  `json:"app_name,omitempty"`
+	RegionName          string  `json:"region_name,omitempty"`
 	Name                string  `json:"name"`
 	RequestCount        int64   `json:"request_count"`
 	ErrorCount          int64   `json:"error_count"`

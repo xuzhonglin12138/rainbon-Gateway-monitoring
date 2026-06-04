@@ -69,6 +69,7 @@ type fakeHTTPLoggerSyncer struct {
 	appID          string
 	matchAppID     string
 	mappingAppID   string
+	metadata       model.RouteMappingMetadata
 	serviceAliases []string
 }
 
@@ -105,6 +106,15 @@ func (f *fakeHTTPLoggerSyncer) SyncHTTPLoggerForAppRoutes(_ context.Context, nam
 	f.matchAppID = matchAppID
 	f.mappingAppID = mappingAppID
 	f.serviceAliases = serviceAliases
+	return nil
+}
+
+func (f *fakeHTTPLoggerSyncer) SyncHTTPLoggerForAppRoutesWithMetadata(_ context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string, metadata model.RouteMappingMetadata) error {
+	f.namespace = namespace
+	f.matchAppID = matchAppID
+	f.mappingAppID = mappingAppID
+	f.serviceAliases = serviceAliases
+	f.metadata = metadata
 	return nil
 }
 
@@ -303,7 +313,7 @@ func TestServerHandlesAppHTTPLoggerSyncWithServiceAliases(t *testing.T) {
 	syncer := &fakeHTTPLoggerSyncer{}
 	server := New(Config{HTTPLoggerSyncer: syncer})
 
-	payload := `{"namespace":"team-ns","region_app_id":"region-app-a","service_aliases":["gr1ea4bc"," gr1ea4bc ","gr7bd8bd"]}`
+	payload := `{"namespace":"team-ns","region_app_id":"region-app-a","region_name":"cn-east","team_name":"team-a","team_alias":"研发团队","app_name":"订单系统","service_aliases":["gr1ea4bc"," gr1ea4bc ","gr7bd8bd"]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/12/gateway/http-logger/sync", strings.NewReader(payload))
 	resp := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(resp, req)
@@ -317,8 +327,15 @@ func TestServerHandlesAppHTTPLoggerSyncWithServiceAliases(t *testing.T) {
 	if syncer.serviceAliases[0] != "gr1ea4bc" || syncer.serviceAliases[1] != "gr7bd8bd" {
 		t.Fatalf("serviceAliases = %#v; want gr1ea4bc, gr7bd8bd", syncer.serviceAliases)
 	}
-	if !strings.Contains(resp.Body.String(), `"service_aliases":["gr1ea4bc","gr7bd8bd"]`) {
-		t.Fatalf("response body = %s; want normalized service_aliases", resp.Body.String())
+	if syncer.metadata.AppName != "订单系统" || syncer.metadata.TeamAlias != "研发团队" || syncer.metadata.RegionName != "cn-east" {
+		t.Fatalf("metadata = %#v; want app/team/region display metadata", syncer.metadata)
+	}
+	body := resp.Body.String()
+	if !strings.Contains(body, `"service_aliases":["gr1ea4bc","gr7bd8bd"]`) {
+		t.Fatalf("response body = %s; want normalized service_aliases", body)
+	}
+	if !strings.Contains(body, `"app_name":"订单系统"`) || !strings.Contains(body, `"team_alias":"研发团队"`) || !strings.Contains(body, `"region_name":"cn-east"`) {
+		t.Fatalf("response body = %s; want display metadata", body)
 	}
 }
 

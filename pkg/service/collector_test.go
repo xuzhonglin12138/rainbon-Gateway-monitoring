@@ -209,6 +209,46 @@ func TestCollectorUsesNamespaceAsTeamScopeFallback(t *testing.T) {
 	t.Fatalf("missing team scope fallback to namespace; writes=%#v", store.writes)
 }
 
+func TestCollectorCopiesDisplayMetadataToMetrics(t *testing.T) {
+	store := &fakeAggregateStore{}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapper{mapping: model.RouteMapping{
+			AppID:       "console-app-a",
+			RegionAppID: "region-app-a",
+			AppName:     "订单系统",
+			TeamName:    "team-a",
+			TeamAlias:   "研发团队",
+			RegionName:  "cn-east",
+			Namespace:   "team-ns",
+			ComponentID: "svc-a",
+		}},
+		Now: func() time.Time {
+			return time.Unix(1710000007, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{{
+		RouteID:     "route-a",
+		URI:         "/api/orders/123",
+		Status:      200,
+		RequestTime: 0.1,
+	}})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("no metric writes")
+	}
+	metric := store.writes[0].Metric
+	if metric.AppID != "console-app-a" || metric.RegionAppID != "region-app-a" || metric.AppName != "订单系统" {
+		t.Fatalf("app metadata = %#v; want console id, region id and name", metric)
+	}
+	if metric.TeamName != "team-a" || metric.TeamAlias != "研发团队" || metric.RegionName != "cn-east" {
+		t.Fatalf("team metadata = %#v; want team and region metadata", metric)
+	}
+}
+
 func TestCollectorLogsSummaryForDiagnostics(t *testing.T) {
 	store := &fakeAggregateStore{}
 	logger, hook := logtest.NewNullLogger()

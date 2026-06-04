@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goodrain/rainbond-plugin-template/pkg/model"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,6 +25,10 @@ func (s HTTPLoggerSyncer) SyncHTTPLoggerForApp(ctx context.Context, namespace, m
 }
 
 func (s HTTPLoggerSyncer) SyncHTTPLoggerForAppRoutes(ctx context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string) error {
+	return s.SyncHTTPLoggerForAppRoutesWithMetadata(ctx, namespace, matchAppID, mappingAppID, serviceAliases, model.RouteMappingMetadata{})
+}
+
+func (s HTTPLoggerSyncer) SyncHTTPLoggerForAppRoutesWithMetadata(ctx context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string, metadata model.RouteMappingMetadata) error {
 	if namespace == "" {
 		return fmt.Errorf("namespace is required")
 	}
@@ -33,6 +38,7 @@ func (s HTTPLoggerSyncer) SyncHTTPLoggerForAppRoutes(ctx context.Context, namesp
 		Namespaces:     []string{namespace},
 		AppID:          matchAppID,
 		MappingAppID:   mappingAppID,
+		Metadata:       metadata,
 		ServiceAliases: serviceAliases,
 		Config:         s.Config,
 		Interval:       time.Minute,

@@ -18,6 +18,7 @@ type fakeRouteClient struct {
 
 type fakeRouteMappingStore struct {
 	mappings       []string
+	routeMappings  []model.RouteMapping
 	replacedAppID  string
 	replacedRoutes []string
 }
@@ -33,6 +34,7 @@ func (f *fakeRouteClient) Update(_ context.Context, _ string, route *unstructure
 
 func (f *fakeRouteMappingStore) SaveRouteMapping(_ context.Context, mapping model.RouteMapping, _ time.Duration) error {
 	f.mappings = append(f.mappings, mapping.AppID)
+	f.routeMappings = append(f.routeMappings, mapping)
 	return nil
 }
 
@@ -111,6 +113,49 @@ func TestHTTPLoggerAttachJobStoresConsoleAppIDWhenMatchingRegionAppID(t *testing
 		if appID != "console-app-a" {
 			t.Fatalf("saved mapping app_id = %q; want console-app-a", appID)
 		}
+	}
+}
+
+func TestHTTPLoggerAttachJobStoresDisplayMetadata(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name":   "route-a",
+			"labels": map[string]interface{}{"creator": "Rainbond", "app_id": "region-app-a"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{map[string]interface{}{"name": "http-a"}},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:       client,
+		MappingStore: store,
+		Namespaces:   []string{"tenant-ns"},
+		AppID:        "region-app-a",
+		MappingAppID: "console-app-a",
+		Metadata: model.RouteMappingMetadata{
+			RegionName:  "cn-east",
+			RegionAppID: "region-app-a",
+			TeamName:    "team-a",
+			TeamAlias:   "研发团队",
+			AppName:     "订单系统",
+		},
+		Config: HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if len(store.routeMappings) == 0 {
+		t.Fatal("no route mappings were saved")
+	}
+	mapping := store.routeMappings[0]
+	if mapping.AppID != "console-app-a" || mapping.RegionAppID != "region-app-a" {
+		t.Fatalf("mapping app ids = %#v; want console and region app ids", mapping)
+	}
+	if mapping.AppName != "订单系统" || mapping.TeamName != "team-a" || mapping.TeamAlias != "研发团队" || mapping.RegionName != "cn-east" {
+		t.Fatalf("mapping display metadata = %#v; want app/team/region display metadata", mapping)
 	}
 }
 

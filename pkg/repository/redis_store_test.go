@@ -247,6 +247,11 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 			"latency_sum_ms", "180",
 			"team_id", "team-a",
 			"app_id", "app-a",
+			"region_app_id", "region-app-a",
+			"app_name", "订单系统",
+			"team_name", "team-a",
+			"team_alias", "研发团队",
+			"region_name", "cn-east",
 			"component_id", "svc-a",
 		},
 	}
@@ -264,6 +269,12 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 	}
 	if items[0].AppID != "app-a" || items[0].TeamID != "team-a" {
 		t.Fatalf("app identity = %#v; want app-a/team-a", items[0])
+	}
+	if items[0].RegionAppID != "region-app-a" || items[0].AppName != "订单系统" {
+		t.Fatalf("app display identity = %#v; want region-app-a and app name", items[0])
+	}
+	if items[0].TeamName != "team-a" || items[0].TeamAlias != "研发团队" || items[0].RegionName != "cn-east" {
+		t.Fatalf("team display identity = %#v; want team and region display metadata", items[0])
 	}
 	if items[0].RequestCount != 12 {
 		t.Fatalf("request count = %d; want 12", items[0].RequestCount)

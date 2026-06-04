@@ -58,8 +58,13 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 	static := []string{
 		"route_group", metric.RouteGroup,
 		"team_id", metric.TeamID,
+		"team_name", metric.TeamName,
+		"team_alias", metric.TeamAlias,
 		"app_id", metric.AppID,
 		"namespace", metric.Namespace,
+		"region_app_id", metric.RegionAppID,
+		"app_name", metric.AppName,
+		"region_name", metric.RegionName,
 		"component_id", metric.ComponentID,
 		"service_alias", metric.ServiceAlias,
 	}
@@ -142,14 +147,19 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 		windowSeconds = 1
 	}
 	for appID, metric := range metrics {
-		name := appID
+		name := firstNonEmpty(metric.AppName, appID)
 		if appID == "" {
 			name = "unknown_app"
 		}
 		items = append(items, model.AppTrafficItem{
 			AppID:               appID,
 			TeamID:              metric.TeamID,
+			TeamName:            metric.TeamName,
+			TeamAlias:           metric.TeamAlias,
 			Namespace:           metric.Namespace,
+			RegionAppID:         metric.RegionAppID,
+			AppName:             metric.AppName,
+			RegionName:          metric.RegionName,
 			Name:                name,
 			RequestCount:        metric.RequestCount,
 			ErrorCount:          metric.ErrorCount,
@@ -230,7 +240,12 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 		current.LatencyCount += metric.LatencyCount
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
+		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
+		current.TeamAlias = firstNonEmpty(current.TeamAlias, metric.TeamAlias)
 		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
+		current.RegionAppID = firstNonEmpty(current.RegionAppID, metric.RegionAppID)
+		current.AppName = firstNonEmpty(current.AppName, metric.AppName)
+		current.RegionName = firstNonEmpty(current.RegionName, metric.RegionName)
 		current.ComponentID = firstNonEmpty(current.ComponentID, metric.ComponentID)
 		metrics[metric.RouteGroup] = current
 	}
@@ -275,7 +290,12 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 		current.LatencySumMs += metric.LatencySumMs
 		current.LatencyCount += metric.LatencyCount
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
+		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
+		current.TeamAlias = firstNonEmpty(current.TeamAlias, metric.TeamAlias)
 		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
+		current.RegionAppID = firstNonEmpty(current.RegionAppID, metric.RegionAppID)
+		current.AppName = firstNonEmpty(current.AppName, metric.AppName)
+		current.RegionName = firstNonEmpty(current.RegionName, metric.RegionName)
 		metrics[metric.AppID] = current
 	}
 	return metrics, nil
@@ -312,7 +332,12 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 		current.LatencyCount += metric.LatencyCount
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
+		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
+		current.TeamAlias = firstNonEmpty(current.TeamAlias, metric.TeamAlias)
 		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
+		current.RegionAppID = firstNonEmpty(current.RegionAppID, metric.RegionAppID)
+		current.AppName = firstNonEmpty(current.AppName, metric.AppName)
+		current.RegionName = firstNonEmpty(current.RegionName, metric.RegionName)
 		metrics[metric.ComponentID] = current
 	}
 	return metrics, nil
@@ -605,8 +630,13 @@ func metricFromHash(value interface{}) model.RouteGroupMetric {
 		LatencySumMs:       parseFloat(fields["latency_sum_ms"]),
 		LatencyCount:       parseInt(fields["latency_count"]),
 		TeamID:             fields["team_id"],
+		TeamName:           fields["team_name"],
+		TeamAlias:          fields["team_alias"],
 		AppID:              fields["app_id"],
 		Namespace:          fields["namespace"],
+		RegionAppID:        fields["region_app_id"],
+		AppName:            fields["app_name"],
+		RegionName:         fields["region_name"],
 		ComponentID:        fields["component_id"],
 		ServiceAlias:       fields["service_alias"],
 	}

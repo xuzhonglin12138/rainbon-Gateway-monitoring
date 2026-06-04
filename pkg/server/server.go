@@ -98,6 +98,10 @@ type HTTPLoggerAppRouteSyncer interface {
 	SyncHTTPLoggerForAppRoutes(ctx context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string) error
 }
 
+type HTTPLoggerAppRouteMetadataSyncer interface {
+	SyncHTTPLoggerForAppRoutesWithMetadata(ctx context.Context, namespace, matchAppID, mappingAppID string, serviceAliases []string, metadata model.RouteMappingMetadata) error
+}
+
 const maxCollectorBatchSize = 5000
 const maxCollectorBodyBytes = 8 << 20
 
@@ -560,6 +564,10 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	var payload struct {
 		Namespace        string   `json:"namespace"`
 		RegionAppID      string   `json:"region_app_id"`
+		RegionName       string   `json:"region_name"`
+		TeamName         string   `json:"team_name"`
+		TeamAlias        string   `json:"team_alias"`
+		AppName          string   `json:"app_name"`
 		ServiceAliases   []string `json:"service_aliases"`
 		ComponentAliases []string `json:"component_aliases"`
 	}
@@ -569,6 +577,10 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	}
 	payload.Namespace = strings.TrimSpace(payload.Namespace)
 	payload.RegionAppID = strings.TrimSpace(payload.RegionAppID)
+	payload.RegionName = strings.TrimSpace(payload.RegionName)
+	payload.TeamName = strings.TrimSpace(payload.TeamName)
+	payload.TeamAlias = strings.TrimSpace(payload.TeamAlias)
+	payload.AppName = strings.TrimSpace(payload.AppName)
 	serviceAliases := normalizeStringList(append(payload.ServiceAliases, payload.ComponentAliases...))
 	if payload.Namespace == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "namespace is required"})
@@ -578,14 +590,27 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	if syncAppID == "" {
 		syncAppID = appID
 	}
+	metadata := model.RouteMappingMetadata{
+		RegionName:  payload.RegionName,
+		RegionAppID: syncAppID,
+		TeamName:    payload.TeamName,
+		TeamAlias:   payload.TeamAlias,
+		AppName:     payload.AppName,
+	}
 	s.logger.WithFields(logrus.Fields{
 		"namespace":       payload.Namespace,
 		"app_id":          appID,
 		"region_app_id":   syncAppID,
+		"region_name":     payload.RegionName,
+		"team_name":       payload.TeamName,
+		"team_alias":      payload.TeamAlias,
+		"app_name":        payload.AppName,
 		"service_aliases": strings.Join(serviceAliases, ","),
 	}).Info("syncing app route-level http-logger")
 	var err error
-	if appRouteSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppRouteSyncer); ok {
+	if appRouteMetadataSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppRouteMetadataSyncer); ok {
+		err = appRouteMetadataSyncer.SyncHTTPLoggerForAppRoutesWithMetadata(r.Context(), payload.Namespace, syncAppID, appID, serviceAliases, metadata)
+	} else if appRouteSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppRouteSyncer); ok {
 		err = appRouteSyncer.SyncHTTPLoggerForAppRoutes(r.Context(), payload.Namespace, syncAppID, appID, serviceAliases)
 	} else if appSyncer, ok := s.httpLoggerSyncer.(HTTPLoggerAppSyncer); ok {
 		err = appSyncer.SyncHTTPLoggerForApp(r.Context(), payload.Namespace, syncAppID, appID)
@@ -597,6 +622,10 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 			"namespace":       payload.Namespace,
 			"app_id":          appID,
 			"region_app_id":   syncAppID,
+			"region_name":     payload.RegionName,
+			"team_name":       payload.TeamName,
+			"team_alias":      payload.TeamAlias,
+			"app_name":        payload.AppName,
 			"service_aliases": strings.Join(serviceAliases, ","),
 		}).Warn("sync app http logger failed")
 		http.Error(w, "sync app http logger failed", http.StatusServiceUnavailable)
@@ -606,6 +635,10 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 		"namespace":       payload.Namespace,
 		"app_id":          appID,
 		"region_app_id":   syncAppID,
+		"region_name":     payload.RegionName,
+		"team_name":       payload.TeamName,
+		"team_alias":      payload.TeamAlias,
+		"app_name":        payload.AppName,
 		"service_aliases": strings.Join(serviceAliases, ","),
 	}).Info("synced app route-level http-logger")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -613,6 +646,10 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 			"namespace":       payload.Namespace,
 			"app_id":          appID,
 			"region_app_id":   syncAppID,
+			"region_name":     payload.RegionName,
+			"team_name":       payload.TeamName,
+			"team_alias":      payload.TeamAlias,
+			"app_name":        payload.AppName,
 			"service_aliases": serviceAliases,
 		},
 	})

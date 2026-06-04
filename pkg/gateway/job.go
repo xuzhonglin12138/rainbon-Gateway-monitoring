@@ -90,6 +90,7 @@ type HTTPLoggerAttachJob struct {
 	Namespaces     []string
 	AppID          string
 	MappingAppID   string
+	Metadata       model.RouteMappingMetadata
 	ServiceAliases []string
 	Config         HTTPLoggerConfig
 	Interval       time.Duration
@@ -284,6 +285,7 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 		if j.MappingAppID != "" {
 			mapping.AppID = j.MappingAppID
 		}
+		mapping = applyRouteMappingMetadata(mapping, j.Metadata)
 		if err := j.MappingStore.SaveRouteMapping(ctx, mapping, 10*time.Minute); err != nil {
 			return nil, fmt.Errorf("save route mapping %s: %w", mapping.RouteID, err)
 		}
@@ -294,13 +296,27 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 				"route_id":         mapping.RouteID,
 				"prometheus_route": mapping.PrometheusRoute,
 				"team_id":          mapping.TeamID,
+				"team_name":        mapping.TeamName,
+				"team_alias":       mapping.TeamAlias,
 				"app_id":           mapping.AppID,
+				"region_app_id":    mapping.RegionAppID,
+				"app_name":         mapping.AppName,
+				"region_name":      mapping.RegionName,
 				"component_id":     mapping.ComponentID,
 				"service_alias":    mapping.ServiceAlias,
 			}).Info("saved apisix route mapping")
 		}
 	}
 	return mappings, nil
+}
+
+func applyRouteMappingMetadata(mapping model.RouteMapping, metadata model.RouteMappingMetadata) model.RouteMapping {
+	mapping.RegionName = firstNonEmptyString(metadata.RegionName, mapping.RegionName)
+	mapping.RegionAppID = firstNonEmptyString(metadata.RegionAppID, mapping.RegionAppID)
+	mapping.TeamName = firstNonEmptyString(metadata.TeamName, mapping.TeamName)
+	mapping.TeamAlias = firstNonEmptyString(metadata.TeamAlias, mapping.TeamAlias)
+	mapping.AppName = firstNonEmptyString(metadata.AppName, mapping.AppName)
+	return mapping
 }
 
 func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstructured) []model.RouteMapping {
@@ -313,6 +329,7 @@ func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstruct
 		RouteID:         route.GetName(),
 		TeamID:          firstLabel(labels, "team_id", "tenant_id"),
 		AppID:           labels["app_id"],
+		RegionAppID:     labels["app_id"],
 		ComponentID:     firstLabel(labels, "service_id", "component_id"),
 		ServiceAlias:    findServiceAlias(labels),
 		Namespace:       namespace,

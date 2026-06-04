@@ -15,17 +15,38 @@ type HTTPLoggerConfig struct {
 	URI       string
 	Timeout   int
 	SSLVerify bool
+	LogFormat map[string]string
 }
 
 func (c HTTPLoggerConfig) plugin() map[string]interface{} {
+	config := map[string]interface{}{
+		"uri":        c.URI,
+		"timeout":    int64(c.Timeout),
+		"ssl_verify": c.SSLVerify,
+	}
+	if len(c.LogFormat) > 0 {
+		config["log_format"] = copyStringMap(c.LogFormat)
+	}
 	return map[string]interface{}{
 		"name":   HTTPLoggerPluginName,
 		"enable": true,
-		"config": map[string]interface{}{
-			"uri":        c.URI,
-			"timeout":    int64(c.Timeout),
-			"ssl_verify": c.SSLVerify,
-		},
+		"config": config,
+	}
+}
+
+func DefaultHTTPLoggerLogFormat() map[string]string {
+	return map[string]string{
+		"timestamp":              "$time_iso8601",
+		"route_name":             "$route_name",
+		"host":                   "$host",
+		"method":                 "$request_method",
+		"uri":                    "$uri",
+		"request_uri":            "$request_uri",
+		"status":                 "$status",
+		"request_time":           "$request_time",
+		"upstream_status":        "$upstream_status",
+		"upstream_response_time": "$upstream_response_time",
+		"client_ip":              "$remote_addr",
 	}
 }
 
@@ -127,11 +148,22 @@ func mergeHTTPLoggerPlugin(existing, desired map[string]interface{}) map[string]
 	config["uri"] = desiredConfig["uri"]
 	config["timeout"] = desiredConfig["timeout"]
 	config["ssl_verify"] = desiredConfig["ssl_verify"]
+	if logFormat, ok := desiredConfig["log_format"]; ok {
+		config["log_format"] = logFormat
+	}
 	merged["config"] = config
 	return merged
 }
 
 func copyMap(input map[string]interface{}) map[string]interface{} {
+	output := make(map[string]interface{}, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
+
+func copyStringMap(input map[string]string) map[string]interface{} {
 	output := make(map[string]interface{}, len(input))
 	for key, value := range input {
 		output[key] = value

@@ -32,6 +32,7 @@ func TestApisixAccessLogAcceptsDefaultHTTPLoggerPayload(t *testing.T) {
 	var log ApisixAccessLog
 	err := json.Unmarshal([]byte(`{
 		"route_id":"r1",
+		"route_name":"tenant_route_child",
 		"service_id":"svc-a",
 		"request":{"method":"GET","uri":"/api/order/detail/123"},
 		"response":{"status":503},
@@ -41,6 +42,9 @@ func TestApisixAccessLogAcceptsDefaultHTTPLoggerPayload(t *testing.T) {
 	}`), &log)
 	if err != nil {
 		t.Fatalf("UnmarshalJSON() unexpected error: %v", err)
+	}
+	if log.RouteName != "tenant_route_child" {
+		t.Fatalf("route_name = %q; want tenant_route_child", log.RouteName)
 	}
 	if log.URI != "/api/order/detail/123" {
 		t.Fatalf("uri = %q; want /api/order/detail/123", log.URI)

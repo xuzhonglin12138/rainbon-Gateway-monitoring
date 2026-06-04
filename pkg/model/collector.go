@@ -8,6 +8,7 @@ import (
 type ApisixAccessLog struct {
 	Timestamp            string  `json:"timestamp"`
 	RouteID              string  `json:"route_id"`
+	RouteName            string  `json:"route_name"`
 	ServiceID            string  `json:"service_id"`
 	Host                 string  `json:"host"`
 	Method               string  `json:"method"`
@@ -24,6 +25,7 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 	type rawLog struct {
 		Timestamp            string      `json:"timestamp"`
 		RouteID              string      `json:"route_id"`
+		RouteName            string      `json:"route_name"`
 		ServiceID            string      `json:"service_id"`
 		Host                 string      `json:"host"`
 		Method               string      `json:"method"`
@@ -50,6 +52,7 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 	}
 	l.Timestamp = raw.Timestamp
 	l.RouteID = raw.RouteID
+	l.RouteName = raw.RouteName
 	l.ServiceID = raw.ServiceID
 	l.Host = raw.Host
 	l.Method = raw.Method

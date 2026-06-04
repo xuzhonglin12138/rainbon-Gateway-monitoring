@@ -170,6 +170,7 @@ func main() {
 		URI:       collectorURI,
 		Timeout:   envInt("NM_HTTP_LOGGER_TIMEOUT_SECONDS", DefaultHTTPLoggerTimeout),
 		SSLVerify: envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
+		LogFormat: gateway.DefaultHTTPLoggerLogFormat(),
 	}
 	httpLoggerSyncer := gateway.HTTPLoggerSyncer{
 		Client:       routeClient,

@@ -65,6 +65,9 @@ func TestEnsureHTTPLoggerPluginAppendsRouteLevelLoggerWithoutTouchingOtherPlugin
 	if config["uri"] != "http://network-monitor-plugin/api/v1/collector/apisix/logs" {
 		t.Fatalf("http-logger uri = %v", config["uri"])
 	}
+	if config["log_format"] != nil {
+		t.Fatalf("http-logger log_format = %v; want nil when not configured", config["log_format"])
+	}
 
 	annotations, _, err := unstructured.NestedStringMap(route.Object, "metadata", "annotations")
 	if err != nil {
@@ -96,7 +99,12 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 		},
 	}}
 
-	cfg := HTTPLoggerConfig{URI: "http://new/api/v1/collector/apisix/logs", Timeout: 3, SSLVerify: false}
+	cfg := HTTPLoggerConfig{
+		URI:       "http://new/api/v1/collector/apisix/logs",
+		Timeout:   3,
+		SSLVerify: false,
+		LogFormat: DefaultHTTPLoggerLogFormat(),
+	}
 	changed, err := EnsureHTTPLoggerPlugin(route, cfg)
 	if err != nil {
 		t.Fatalf("EnsureHTTPLoggerPlugin() unexpected error: %v", err)
@@ -111,5 +119,16 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 	}
 	if changed {
 		t.Fatal("second repair changed = true; want false")
+	}
+
+	httpRoutes, ok, err := unstructured.NestedSlice(route.Object, "spec", "http")
+	if err != nil || !ok {
+		t.Fatalf("read spec.http: ok=%v err=%v", ok, err)
+	}
+	plugins := httpRoutes[0].(map[string]interface{})["plugins"].([]interface{})
+	config := plugins[0].(map[string]interface{})["config"].(map[string]interface{})
+	logFormat := config["log_format"].(map[string]interface{})
+	if logFormat["route_name"] != "$route_name" {
+		t.Fatalf("route_name log format = %q; want $route_name", logFormat["route_name"])
 	}
 }

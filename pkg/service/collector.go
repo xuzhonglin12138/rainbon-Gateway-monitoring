@@ -73,7 +73,7 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 	}
 	var skippedMissingRoute, resolvedCount, unknownMappingCount int
 	for _, log := range logs {
-		if log.RouteID == "" && log.ServiceID == "" {
+		if log.RouteID == "" && log.RouteName == "" && log.ServiceID == "" {
 			skippedMissingRoute++
 			if c.logger != nil {
 				c.logger.WithFields(logrus.Fields{
@@ -83,11 +83,12 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 			}
 			continue
 		}
-		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteID, log.ServiceID)
+		mapping, err := c.resolveMapping(ctx, log)
 		if err != nil {
 			if c.logger != nil {
 				c.logger.WithError(err).WithFields(logrus.Fields{
 					"route_id":   log.RouteID,
+					"route_name": log.RouteName,
 					"service_id": log.ServiceID,
 					"uri":        chooseURI(log),
 				}).Warn("resolve apisix route mapping failed")
@@ -107,6 +108,7 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		if c.logger != nil {
 			c.logger.WithFields(logrus.Fields{
 				"route_id":        log.RouteID,
+				"route_name":      log.RouteName,
 				"service_id":      log.ServiceID,
 				"route_group":     routeGroup,
 				"team_id":         mapping.TeamID,
@@ -135,6 +137,19 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		}).Info("collected apisix access logs")
 	}
 	return nil
+}
+
+func (c *InternalRouteCollector) resolveMapping(ctx context.Context, log model.ApisixAccessLog) (model.RouteMapping, error) {
+	if log.RouteID != "" {
+		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteID, log.ServiceID)
+		if err == nil {
+			return mapping, nil
+		}
+		if log.RouteName == "" || log.RouteName == log.RouteID {
+			return model.RouteMapping{}, err
+		}
+	}
+	return c.mapper.ResolveRoute(ctx, log.RouteName, log.ServiceID)
 }
 
 func (c *InternalRouteCollector) resolveRouteGroup(ctx context.Context, mapping model.RouteMapping, log model.ApisixAccessLog) string {

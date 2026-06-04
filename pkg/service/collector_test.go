@@ -43,6 +43,20 @@ func (f fakeRouteMapper) ResolveRoute(_ context.Context, routeID, serviceID stri
 	return got, nil
 }
 
+type fakeRouteMapperByID map[string]model.RouteMapping
+
+func (f fakeRouteMapperByID) ResolveRoute(_ context.Context, routeID, serviceID string) (model.RouteMapping, error) {
+	mapping, ok := f[routeID]
+	if !ok {
+		return model.RouteMapping{}, errors.New("mapping missing")
+	}
+	mapping.RouteID = routeID
+	if mapping.ComponentID == "" {
+		mapping.ComponentID = serviceID
+	}
+	return mapping, nil
+}
+
 type fakeCollectorRuleStore struct {
 	rules []model.RouteGroupRule
 }
@@ -124,6 +138,42 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 	if platform5m.LatencySumMs != 200 {
 		t.Fatalf("platform 5m latency sum = %v; want 200", platform5m.LatencySumMs)
+	}
+}
+
+func TestCollectorFallsBackToRouteNameWhenApisixRouteIDIsInternalID(t *testing.T) {
+	store := &fakeAggregateStore{}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapperByID{
+			"xuzl_gr1ea4bc-8080-route_db59856e": {
+				TeamID:       "team-a",
+				AppID:        "1023",
+				ComponentID:  "gr1ea4bc",
+				ServiceAlias: "gr1ea4bc",
+			},
+		},
+		Now: func() time.Time {
+			return time.Unix(1710000007, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{{
+		RouteID:        "19963474",
+		RouteName:      "xuzl_gr1ea4bc-8080-route_db59856e",
+		URI:            "/api/orders/123",
+		Status:         200,
+		RequestTime:    0.01,
+		UpstreamStatus: 200,
+	}})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("writes length = 0; want route group bucket writes")
+	}
+	if store.writes[0].Metric.AppID != "1023" {
+		t.Fatalf("metric app id = %q; want 1023", store.writes[0].Metric.AppID)
 	}
 }
 

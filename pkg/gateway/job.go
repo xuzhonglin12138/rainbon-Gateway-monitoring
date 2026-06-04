@@ -308,6 +308,7 @@ func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstruct
 		return nil
 	}
 	labels := route.GetLabels()
+	parentPrometheusRoute := prometheusRouteLabel(namespace, route.GetName(), "")
 	mapping := model.RouteMapping{
 		RouteID:         route.GetName(),
 		TeamID:          firstLabel(labels, "team_id", "tenant_id"),
@@ -315,10 +316,10 @@ func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstruct
 		ComponentID:     firstLabel(labels, "service_id", "component_id"),
 		ServiceAlias:    findServiceAlias(labels),
 		Namespace:       namespace,
-		PrometheusRoute: prometheusRouteLabel(namespace, route.GetName(), ""),
+		PrometheusRoute: parentPrometheusRoute,
 	}
 
-	result := []model.RouteMapping{mapping}
+	result := routeMappingAliases(mapping, route.GetName(), parentPrometheusRoute)
 	httpRoutes, ok, _ := unstructured.NestedSlice(route.Object, "spec", "http")
 	if !ok {
 		return result
@@ -332,13 +333,33 @@ func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstruct
 		if name == "" {
 			continue
 		}
+		childPrometheusRoute := prometheusRouteLabel(namespace, route.GetName(), name)
 		child := mapping
 		child.RouteID = name
-		child.PrometheusRoute = prometheusRouteLabel(namespace, route.GetName(), name)
+		child.PrometheusRoute = childPrometheusRoute
 		if backendService := firstHTTPBackendServiceName(httpRoute); backendService != "" {
 			child.ComponentID = firstNonEmptyString(child.ComponentID, backendService)
 		}
-		result = append(result, child)
+		result = append(result, routeMappingAliases(child, name, prometheusRouteLabel("", route.GetName(), name), childPrometheusRoute)...)
+	}
+	return result
+}
+
+func routeMappingAliases(mapping model.RouteMapping, routeIDs ...string) []model.RouteMapping {
+	seen := make(map[string]struct{})
+	result := make([]model.RouteMapping, 0, len(routeIDs))
+	for _, routeID := range routeIDs {
+		routeID = strings.TrimSpace(routeID)
+		if routeID == "" {
+			continue
+		}
+		if _, ok := seen[routeID]; ok {
+			continue
+		}
+		seen[routeID] = struct{}{}
+		alias := mapping
+		alias.RouteID = routeID
+		result = append(result, alias)
 	}
 	return result
 }

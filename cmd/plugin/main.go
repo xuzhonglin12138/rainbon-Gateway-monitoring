@@ -242,23 +242,53 @@ func envOrDefault(key, fallback string) string {
 }
 
 func collectorURIFromEnv() string {
-	configured := os.Getenv("NM_COLLECTOR_URI")
-	if configured != "" && configured != DefaultCollectorURI {
+	configured := strings.TrimSpace(os.Getenv("NM_COLLECTOR_URI"))
+	if configured != "" && configured != DefaultCollectorURI && !isKubernetesServiceURI(configured) {
 		return configured
 	}
-	if service := os.Getenv("_SERVICE_ALIAS"); service != "" {
-		if namespace := os.Getenv("_NAMESPACE"); namespace != "" {
-			port := os.Getenv("HTTP_8080_PORT")
-			if port == "" {
-				port = "8080"
-			}
-			return "http://" + service + "." + namespace + ".svc:" + port + CollectorPath
-		}
+	if uri := rainbondNodePortCollectorURI(); uri != "" {
+		return uri
 	}
 	if configured != "" {
 		return configured
 	}
 	return DefaultCollectorURI
+}
+
+func isKubernetesServiceURI(uri string) bool {
+	return strings.Contains(uri, ".svc")
+}
+
+func rainbondNodePortCollectorURI() string {
+	alias := strings.ToUpper(strings.TrimSpace(os.Getenv("_SERVICE_ALIAS")))
+	host := strings.TrimSpace(os.Getenv("_HOST_IP"))
+	if alias == "" || host == "" {
+		return ""
+	}
+
+	prefix := alias + "_"
+	var nodePort int
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "_SERVICE_HOST") {
+			continue
+		}
+		candidate := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "_SERVICE_HOST")
+		parsed, err := strconv.Atoi(candidate)
+		if err != nil || parsed < 30000 || parsed > 32767 {
+			continue
+		}
+		if os.Getenv(prefix+candidate+"_SERVICE_PORT") != "8080" {
+			continue
+		}
+		if nodePort == 0 || parsed < nodePort {
+			nodePort = parsed
+		}
+	}
+	if nodePort == 0 {
+		return ""
+	}
+	return "http://" + host + ":" + strconv.Itoa(nodePort) + CollectorPath
 }
 
 func envInt(key string, fallback int) int {

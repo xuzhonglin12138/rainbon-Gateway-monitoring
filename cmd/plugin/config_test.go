@@ -19,30 +19,47 @@ func TestDefaultCollectorURIUsesGatewayMonitoringService(t *testing.T) {
 }
 
 func TestCollectorURIFromEnvUsesExplicitCustomValue(t *testing.T) {
-	t.Setenv("NM_COLLECTOR_URI", "http://collector.custom.svc:8080"+CollectorPath)
+	t.Setenv("NM_COLLECTOR_URI", "http://collector.example.com:30004"+CollectorPath)
 	t.Setenv("_SERVICE_ALIAS", "gra6b16b")
-	t.Setenv("_NAMESPACE", "rbd-plugins")
-	t.Setenv("HTTP_8080_PORT", "8080")
+	t.Setenv("_HOST_IP", "172.16.0.169")
+	t.Setenv("GRA6B16B_30004_SERVICE_HOST", "10.43.168.162")
+	t.Setenv("GRA6B16B_30004_SERVICE_PORT", "8080")
 
-	if got := collectorURIFromEnv(); got != "http://collector.custom.svc:8080"+CollectorPath {
+	if got := collectorURIFromEnv(); got != "http://collector.example.com:30004"+CollectorPath {
 		t.Fatalf("collectorURIFromEnv() = %q", got)
 	}
 }
 
-func TestCollectorURIFromEnvDerivesRainbondServiceWhenDefaultIsConfigured(t *testing.T) {
+func TestCollectorURIFromEnvDerivesRainbondNodePortWhenDefaultIsConfigured(t *testing.T) {
 	t.Setenv("NM_COLLECTOR_URI", DefaultCollectorURI)
 	t.Setenv("_SERVICE_ALIAS", "gra6b16b")
-	t.Setenv("_NAMESPACE", "rbd-plugins")
-	t.Setenv("HTTP_8080_PORT", "8080")
+	t.Setenv("_HOST_IP", "172.16.0.169")
+	t.Setenv("GRA6B16B_30001_SERVICE_HOST", "10.43.168.161")
+	t.Setenv("GRA6B16B_30001_SERVICE_PORT", "5000")
+	t.Setenv("GRA6B16B_30004_SERVICE_HOST", "10.43.168.162")
+	t.Setenv("GRA6B16B_30004_SERVICE_PORT", "8080")
 
-	want := "http://gra6b16b.rbd-plugins.svc:8080" + CollectorPath
+	want := "http://172.16.0.169:30004" + CollectorPath
+	if got := collectorURIFromEnv(); got != want {
+		t.Fatalf("collectorURIFromEnv() = %q, want %q", got, want)
+	}
+}
+
+func TestCollectorURIFromEnvOverridesKubernetesServiceURIWithRainbondNodePort(t *testing.T) {
+	t.Setenv("NM_COLLECTOR_URI", "http://gra6b16b.rbd-plugins.svc.cluster.local:8080"+CollectorPath)
+	t.Setenv("_SERVICE_ALIAS", "gra6b16b")
+	t.Setenv("_HOST_IP", "172.16.0.169")
+	t.Setenv("GRA6B16B_30004_SERVICE_HOST", "10.43.168.162")
+	t.Setenv("GRA6B16B_30004_SERVICE_PORT", "8080")
+
+	want := "http://172.16.0.169:30004" + CollectorPath
 	if got := collectorURIFromEnv(); got != want {
 		t.Fatalf("collectorURIFromEnv() = %q, want %q", got, want)
 	}
 }
 
 func TestCollectorURIFromEnvFallsBackToDefaultWithoutRainbondRuntimeEnv(t *testing.T) {
-	unsetEnv(t, "NM_COLLECTOR_URI", "_SERVICE_ALIAS", "_NAMESPACE", "HTTP_8080_PORT")
+	unsetEnv(t, "NM_COLLECTOR_URI", "_SERVICE_ALIAS", "_HOST_IP", "GRA6B16B_30004_SERVICE_HOST", "GRA6B16B_30004_SERVICE_PORT")
 
 	if got := collectorURIFromEnv(); got != DefaultCollectorURI {
 		t.Fatalf("collectorURIFromEnv() = %q, want %q", got, DefaultCollectorURI)

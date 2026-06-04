@@ -233,6 +233,52 @@ func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 	}
 }
 
+func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		keys: []interface{}{
+			"nm:platform:5m:route-group:_api_orders:bucket:1710000005",
+			"nm:platform:5m:route-group:_api_pay:bucket:1710000005",
+		},
+		hash: []interface{}{
+			"route_group", "/api/orders/*",
+			"request_count", "6",
+			"error_count", "2",
+			"latency_count", "6",
+			"latency_sum_ms", "180",
+			"team_id", "team-a",
+			"app_id", "app-a",
+			"component_id", "svc-a",
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].AppID != "app-a" || items[0].TeamID != "team-a" {
+		t.Fatalf("app identity = %#v; want app-a/team-a", items[0])
+	}
+	if items[0].RequestCount != 12 {
+		t.Fatalf("request count = %d; want 12", items[0].RequestCount)
+	}
+	if items[0].ErrorCount != 4 {
+		t.Fatalf("error count = %d; want 4", items[0].ErrorCount)
+	}
+	if items[0].AvgLatencyMs != 30 {
+		t.Fatalf("avg latency = %v; want 30", items[0].AvgLatencyMs)
+	}
+	if items[0].ThroughputPerSecond != 0.04 {
+		t.Fatalf("throughput = %v; want 0.04", items[0].ThroughputPerSecond)
+	}
+}
+
 func TestRedisStoreReturnsRouteGroupSnapshotMeta(t *testing.T) {
 	client := &fakeRedisClient{}
 	store := NewRedisStore(client)

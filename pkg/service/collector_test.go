@@ -177,6 +177,38 @@ func TestCollectorFallsBackToRouteNameWhenApisixRouteIDIsInternalID(t *testing.T
 	}
 }
 
+func TestCollectorUsesNamespaceAsTeamScopeFallback(t *testing.T) {
+	store := &fakeAggregateStore{}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapper{mapping: model.RouteMapping{
+			AppID:       "app-a",
+			Namespace:   "team-ns",
+			ComponentID: "svc-a",
+		}},
+		Now: func() time.Time {
+			return time.Unix(1710000007, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{{
+		RouteID:     "route-a",
+		URI:         "/api/orders/123",
+		Status:      200,
+		RequestTime: 0.1,
+	}})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+
+	for _, write := range store.writes {
+		if write.Scope.Kind == model.ScopeTeam && write.Scope.ID == "team-ns" {
+			return
+		}
+	}
+	t.Fatalf("missing team scope fallback to namespace; writes=%#v", store.writes)
+}
+
 func TestCollectorLogsSummaryForDiagnostics(t *testing.T) {
 	store := &fakeAggregateStore{}
 	logger, hook := logtest.NewNullLogger()

@@ -59,6 +59,7 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		"route_group", metric.RouteGroup,
 		"team_id", metric.TeamID,
 		"app_id", metric.AppID,
+		"namespace", metric.Namespace,
 		"component_id", metric.ComponentID,
 		"service_alias", metric.ServiceAlias,
 	}
@@ -121,6 +122,45 @@ func (s *RedisStore) ListAppComponentSummaries(ctx context.Context, appID string
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].RequestCount > items[j].RequestCount
 	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.AppTrafficItem, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	metrics, err := s.aggregateAppMetrics(ctx, scope, window)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]model.AppTrafficItem, 0, len(metrics))
+	windowSeconds := window.Duration().Seconds()
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
+	for appID, metric := range metrics {
+		name := appID
+		if appID == "" {
+			name = "unknown_app"
+		}
+		items = append(items, model.AppTrafficItem{
+			AppID:               appID,
+			TeamID:              metric.TeamID,
+			Namespace:           metric.Namespace,
+			Name:                name,
+			RequestCount:        metric.RequestCount,
+			ErrorCount:          metric.ErrorCount,
+			ErrorRate:           metric.ErrorRate(),
+			UpstreamErrorCount:  metric.UpstreamErrorCount,
+			UpstreamErrorRate:   metric.UpstreamErrorRate(),
+			AvgLatencyMs:        metric.AvgLatencyMs(),
+			ThroughputPerSecond: float64(metric.RequestCount) / windowSeconds,
+		})
+	}
+	sortAppTrafficItems(items, sortBy)
 	if len(items) > limit {
 		items = items[:limit]
 	}
@@ -190,6 +230,7 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 		current.LatencyCount += metric.LatencyCount
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
+		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
 		current.ComponentID = firstNonEmpty(current.ComponentID, metric.ComponentID)
 		metrics[metric.RouteGroup] = current
 	}
@@ -203,6 +244,41 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 		items = items[:limit]
 	}
 	return items, nil
+}
+
+func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
+	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	if err != nil {
+		return nil, err
+	}
+	keys := stringSlice(keysValue)
+	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	metrics := make(map[string]model.RouteGroupMetric)
+	for _, key := range keys {
+		bucketUnix, ok := bucketUnixFromKey(key)
+		if !ok || bucketUnix < minBucket {
+			continue
+		}
+		values, err := s.client.Do(ctx, "HGETALL", key)
+		if err != nil {
+			return nil, err
+		}
+		metric := metricFromHash(values)
+		if metric.AppID == "" {
+			continue
+		}
+		current := metrics[metric.AppID]
+		current.AppID = metric.AppID
+		current.RequestCount += metric.RequestCount
+		current.ErrorCount += metric.ErrorCount
+		current.UpstreamErrorCount += metric.UpstreamErrorCount
+		current.LatencySumMs += metric.LatencySumMs
+		current.LatencyCount += metric.LatencyCount
+		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
+		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
+		metrics[metric.AppID] = current
+	}
+	return metrics, nil
 }
 
 func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
@@ -236,6 +312,7 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 		current.LatencyCount += metric.LatencyCount
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
+		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
 		metrics[metric.ComponentID] = current
 	}
 	return metrics, nil
@@ -529,6 +606,7 @@ func metricFromHash(value interface{}) model.RouteGroupMetric {
 		LatencyCount:       parseInt(fields["latency_count"]),
 		TeamID:             fields["team_id"],
 		AppID:              fields["app_id"],
+		Namespace:          fields["namespace"],
 		ComponentID:        fields["component_id"],
 		ServiceAlias:       fields["service_alias"],
 	}
@@ -571,6 +649,22 @@ func sortRouteGroupItems(items []model.RouteGroupItem, sortBy string) {
 			return items[i].ErrorCount > items[j].ErrorCount
 		default:
 			return items[i].RequestCount > items[j].RequestCount
+		}
+	})
+}
+
+func sortAppTrafficItems(items []model.AppTrafficItem, sortBy string) {
+	sort.Slice(items, func(i, j int) bool {
+		switch sortBy {
+		case "latency":
+			return items[i].AvgLatencyMs > items[j].AvgLatencyMs
+		case "errors":
+			if items[i].ErrorCount == items[j].ErrorCount {
+				return items[i].ErrorRate > items[j].ErrorRate
+			}
+			return items[i].ErrorCount > items[j].ErrorCount
+		default:
+			return items[i].ThroughputPerSecond > items[j].ThroughputPerSecond
 		}
 	})
 }

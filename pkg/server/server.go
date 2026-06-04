@@ -52,6 +52,10 @@ type RouteGroupQueryStore interface {
 	ListRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error)
 }
 
+type AppTrafficQueryStore interface {
+	ListApps(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.AppTrafficItem, error)
+}
+
 type AppComponentSummaryStore interface {
 	ListAppComponentSummaries(ctx context.Context, appID string, window model.Window, limit int) ([]model.AppComponentSummary, error)
 }
@@ -123,6 +127,9 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("/static/main.js", s.handleStaticJS)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/api/v1/collector/apisix/logs", s.handleCollectApisixLogs)
+	mux.HandleFunc("/api/v1/platform/apps/top-errors", s.handlePlatformAppTopErrors)
+	mux.HandleFunc("/api/v1/platform/apps/top-latency", s.handlePlatformAppTopLatency)
+	mux.HandleFunc("/api/v1/platform/apps/top-throughput", s.handlePlatformAppTopThroughput)
 	mux.HandleFunc("/api/v1/platform/internal-routes/top-errors", s.handlePlatformTopErrors)
 	mux.HandleFunc("/api/v1/platform/internal-routes/top-latency", s.handlePlatformTopLatency)
 	mux.HandleFunc("/api/v1/platform/nodes/", s.handlePlatformNodeRoutes)
@@ -231,7 +238,9 @@ func (s *Server) handleCollectApisixLogs(w http.ResponseWriter, r *http.Request)
 	s.logger.WithFields(logrus.Fields{
 		"log_count": len(logs),
 	}).Info("received apisix access logs")
-	if err := s.collector.Collect(r.Context(), logs); err != nil {
+	collectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.collector.Collect(collectCtx, logs); err != nil {
 		s.logger.WithError(err).WithField("log_count", len(logs)).Warn("collect apisix logs failed")
 		http.Error(w, "collect logs failed", http.StatusInternalServerError)
 		return
@@ -247,6 +256,18 @@ func (s *Server) handlePlatformTopErrors(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handlePlatformTopLatency(w http.ResponseWriter, r *http.Request) {
 	s.handleTopRoutes(w, r, model.AggregateScope{Kind: model.ScopePlatform}, "latency")
+}
+
+func (s *Server) handlePlatformAppTopErrors(w http.ResponseWriter, r *http.Request) {
+	s.handleTopApps(w, r, model.AggregateScope{Kind: model.ScopePlatform}, "errors")
+}
+
+func (s *Server) handlePlatformAppTopLatency(w http.ResponseWriter, r *http.Request) {
+	s.handleTopApps(w, r, model.AggregateScope{Kind: model.ScopePlatform}, "latency")
+}
+
+func (s *Server) handlePlatformAppTopThroughput(w http.ResponseWriter, r *http.Request) {
+	s.handleTopApps(w, r, model.AggregateScope{Kind: model.ScopePlatform}, "throughput")
 }
 
 func (s *Server) handlePlatformOverview(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +365,27 @@ func (s *Server) handlePlatformNodeRoutes(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleTeamRoutes(w http.ResponseWriter, r *http.Request) {
 	id, suffix, ok := splitScopedPath(r.URL.Path, "/api/v1/teams/")
-	if !ok || !strings.HasPrefix(suffix, "/internal-routes/") {
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if strings.HasPrefix(suffix, "/apps/") {
+		var sortBy string
+		switch {
+		case strings.HasSuffix(suffix, "/top-errors"):
+			sortBy = "errors"
+		case strings.HasSuffix(suffix, "/top-latency"):
+			sortBy = "latency"
+		case strings.HasSuffix(suffix, "/top-throughput"):
+			sortBy = "throughput"
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		s.handleTopApps(w, r, model.AggregateScope{Kind: model.ScopeTeam, ID: id}, sortBy)
+		return
+	}
+	if !strings.HasPrefix(suffix, "/internal-routes/") {
 		http.NotFound(w, r)
 		return
 	}
@@ -876,6 +917,67 @@ func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope m
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":     items,
 		"meta":     meta,
+		"warnings": []string{},
+	})
+}
+
+func (s *Server) handleTopApps(w http.ResponseWriter, r *http.Request, scope model.AggregateScope, sortBy string) {
+	if !s.isLicensed() {
+		http.Error(w, "plugin not authorized", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store, ok := s.queryStore.(AppTrafficQueryStore)
+	if !ok || store == nil {
+		http.Error(w, "app traffic store is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	limit := parseLimit(r.URL.Query().Get("limit"), 50)
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+		"window":     window,
+		"limit":      limit,
+		"sort_by":    sortBy,
+	}).Info("querying app traffic top")
+	items, err := store.ListApps(r.Context(), scope, window, limit, sortBy)
+	if err != nil {
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"scope_kind": scope.Kind,
+			"scope_id":   scope.ID,
+			"window":     window,
+			"limit":      limit,
+			"sort_by":    sortBy,
+		}).Warn("list app traffic top failed")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"data":     []model.AppTrafficItem{},
+			"warnings": []string{"redis app traffic buckets are unavailable"},
+			"meta":     model.QueryMeta{Window: window, Partial: true, Stale: true},
+		})
+		return
+	}
+	if items == nil {
+		items = []model.AppTrafficItem{}
+	}
+	s.logger.WithFields(logrus.Fields{
+		"scope_kind": scope.Kind,
+		"scope_id":   scope.ID,
+		"window":     window,
+		"limit":      limit,
+		"sort_by":    sortBy,
+		"item_count": len(items),
+	}).Info("listed app traffic top")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":     items,
+		"meta":     model.QueryMeta{Window: window},
 		"warnings": []string{},
 	})
 }

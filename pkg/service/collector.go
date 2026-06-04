@@ -194,6 +194,7 @@ func metricFromLog(routeGroup string, mapping model.RouteMapping, log model.Apis
 		LatencyCount: 1,
 		TeamID:       mapping.TeamID,
 		AppID:        mapping.AppID,
+		Namespace:    mapping.Namespace,
 		ComponentID:  mapping.ComponentID,
 		ServiceAlias: mapping.ServiceAlias,
 	}
@@ -209,10 +210,19 @@ func metricFromLog(routeGroup string, mapping model.RouteMapping, log model.Apis
 func scopesForMapping(mapping model.RouteMapping) []model.AggregateScope {
 	return []model.AggregateScope{
 		{Kind: model.ScopePlatform},
-		{Kind: model.ScopeTeam, ID: valueOrUnknown(mapping.TeamID, "unknown_team")},
+		{Kind: model.ScopeTeam, ID: valueOrUnknown(firstNonEmptyString(mapping.TeamID, mapping.Namespace), "unknown_team")},
 		{Kind: model.ScopeApp, ID: valueOrUnknown(mapping.AppID, "unknown_app")},
 		{Kind: model.ScopeComponent, ID: valueOrUnknown(mapping.ComponentID, "unknown_component")},
 	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func valueOrUnknown(value, fallback string) string {

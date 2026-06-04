@@ -152,6 +152,7 @@ type RouteGroupMetric struct {
 	LatencyCount       int64   `json:"latency_count"`
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
+	Namespace          string  `json:"namespace,omitempty"`
 	ComponentID        string  `json:"component_id,omitempty"`
 	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
@@ -187,6 +188,7 @@ type RouteGroupItem struct {
 	AvgLatencyMs       float64 `json:"avg_latency_ms"`
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
+	Namespace          string  `json:"namespace,omitempty"`
 	ComponentID        string  `json:"component_id,omitempty"`
 	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
@@ -202,9 +204,24 @@ func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 		AvgLatencyMs:       metric.AvgLatencyMs(),
 		AppID:              metric.AppID,
 		TeamID:             metric.TeamID,
+		Namespace:          metric.Namespace,
 		ComponentID:        metric.ComponentID,
 		ServiceAlias:       metric.ServiceAlias,
 	}
+}
+
+type AppTrafficItem struct {
+	AppID               string  `json:"app_id"`
+	TeamID              string  `json:"team_id,omitempty"`
+	Namespace           string  `json:"namespace,omitempty"`
+	Name                string  `json:"name"`
+	RequestCount        int64   `json:"request_count"`
+	ErrorCount          int64   `json:"error_count"`
+	ErrorRate           float64 `json:"error_rate"`
+	UpstreamErrorCount  int64   `json:"upstream_error_count"`
+	UpstreamErrorRate   float64 `json:"upstream_error_rate"`
+	AvgLatencyMs        float64 `json:"avg_latency_ms"`
+	ThroughputPerSecond float64 `json:"throughput_per_second"`
 }
 
 type AppComponentSummary struct {

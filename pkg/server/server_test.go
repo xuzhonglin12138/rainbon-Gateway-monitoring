@@ -11,6 +11,7 @@ import (
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/license"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	"github.com/goodrain/rainbond-plugin-template/pkg/service"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
@@ -42,12 +43,17 @@ func (f *fakeConfigStore) SaveRouteGroupRules(_ context.Context, _ string, rules
 
 type fakeRouteGroupQueryStore struct {
 	items      []model.RouteGroupItem
+	apps       []model.AppTrafficItem
 	components []model.AppComponentSummary
 	meta       model.QueryMeta
 }
 
 func (f fakeRouteGroupQueryStore) ListRouteGroups(_ context.Context, _ model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
 	return f.items, nil
+}
+
+func (f fakeRouteGroupQueryStore) ListApps(_ context.Context, _ model.AggregateScope, _ model.Window, _ int, _ string) ([]model.AppTrafficItem, error) {
+	return f.apps, nil
 }
 
 func (f fakeRouteGroupQueryStore) GetRouteGroupSnapshotMeta(_ context.Context, _ model.AggregateScope, _ model.Window, _ string) (model.QueryMeta, error) {
@@ -64,6 +70,21 @@ type fakeHTTPLoggerSyncer struct {
 	matchAppID     string
 	mappingAppID   string
 	serviceAliases []string
+}
+
+type collectorContextStore struct {
+	canceled bool
+}
+
+func (s *collectorContextStore) AddRouteGroupBucket(ctx context.Context, _ model.AggregateScope, _ model.Window, _ int64, _ model.RouteGroupMetric) error {
+	s.canceled = ctx.Err() != nil
+	return nil
+}
+
+type collectorContextMapper struct{}
+
+func (collectorContextMapper) ResolveRoute(_ context.Context, routeID, serviceID string) (model.RouteMapping, error) {
+	return model.RouteMapping{RouteID: routeID, AppID: "app-a", ComponentID: serviceID}, nil
 }
 
 func (f *fakeHTTPLoggerSyncer) SyncHTTPLogger(_ context.Context, namespace, appID string) error {
@@ -102,6 +123,30 @@ func TestDecodeAccessLogsAcceptsBatchAndSinglePayloads(t *testing.T) {
 	}
 	if len(single) != 1 || single[0].RouteID != "r1" {
 		t.Fatalf("single decode = %#v", single)
+	}
+}
+
+func TestCollectApisixLogsDoesNotUseCanceledRequestContextForWrites(t *testing.T) {
+	t.Setenv("NM_SKIP_LICENSE_CHECK", "true")
+	store := &collectorContextStore{}
+	collector := service.NewInternalRouteCollector(service.CollectorConfig{
+		Store:  store,
+		Mapper: collectorContextMapper{},
+	})
+	server := New(Config{Collector: collector})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/collector/apisix/logs", strings.NewReader(`[{"route_id":"route-a","service_id":"svc-a","uri":"/api/ping","status":200}]`)).WithContext(ctx)
+	resp := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s; want 202", resp.Code, resp.Body.String())
+	}
+	if store.canceled {
+		t.Fatal("collector write context was canceled by request context")
 	}
 }
 
@@ -353,6 +398,57 @@ func TestServerLogsRouteGroupTopResultDiagnostics(t *testing.T) {
 		return
 	}
 	t.Fatalf("missing route group result log; entries=%#v", hook.Entries)
+}
+
+func TestServerHandlesPlatformAppTopThroughput(t *testing.T) {
+	server := New(Config{
+		QueryStore: fakeRouteGroupQueryStore{
+			apps: []model.AppTrafficItem{{
+				AppID:               "app-a",
+				TeamID:              "team-a",
+				RequestCount:        600,
+				ErrorCount:          2,
+				ErrorRate:           float64(2) / float64(600),
+				AvgLatencyMs:        45,
+				ThroughputPerSecond: 2,
+			}},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/apps/top-throughput?window=5m", nil)
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"app_id":"app-a"`) || !strings.Contains(resp.Body.String(), `"throughput_per_second":2`) {
+		t.Fatalf("response body = %s; want app throughput ranking", resp.Body.String())
+	}
+}
+
+func TestServerHandlesTeamAppTopErrors(t *testing.T) {
+	server := New(Config{
+		QueryStore: fakeRouteGroupQueryStore{
+			apps: []model.AppTrafficItem{{
+				AppID:        "app-a",
+				TeamID:       "team-a",
+				RequestCount: 12,
+				ErrorCount:   3,
+				ErrorRate:    0.25,
+				AvgLatencyMs: 80,
+			}},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/teams/team-a/apps/top-errors?window=5m", nil)
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"team_id":"team-a"`) || !strings.Contains(resp.Body.String(), `"error_count":3`) {
+		t.Fatalf("response body = %s; want team app error ranking", resp.Body.String())
+	}
 }
 
 func TestServerHandlesAppComponentSummary(t *testing.T) {

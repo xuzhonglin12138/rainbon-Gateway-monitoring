@@ -403,6 +403,22 @@ func (s *RedisStore) GetAppPrometheusRoutes(ctx context.Context, appID string) (
 	return stringSlice(value), nil
 }
 
+func (s *RedisStore) ReplaceAppPrometheusRoutes(ctx context.Context, appID string, routes []string) error {
+	if appID == "" {
+		return fmt.Errorf("app_id is required")
+	}
+	key := appPrometheusRoutesKey(appID)
+	if _, err := s.client.Do(ctx, "DEL", key); err != nil {
+		return err
+	}
+	if len(routes) == 0 {
+		return nil
+	}
+	args := append([]string{"SADD", key}, routes...)
+	_, err := s.client.Do(ctx, args...)
+	return err
+}
+
 func routeGroupBucketKey(scope model.AggregateScope, window model.Window, routeGroup string, bucketUnix int64) string {
 	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), window, sanitizeKeyPart(routeGroup), bucketUnix)
 }

@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 type collectorWrite struct {
@@ -26,9 +28,13 @@ func (f *fakeAggregateStore) AddRouteGroupBucket(_ context.Context, scope model.
 
 type fakeRouteMapper struct {
 	mapping model.RouteMapping
+	err     error
 }
 
 func (f fakeRouteMapper) ResolveRoute(_ context.Context, routeID, serviceID string) (model.RouteMapping, error) {
+	if f.err != nil {
+		return model.RouteMapping{}, f.err
+	}
 	got := f.mapping
 	got.RouteID = routeID
 	if got.ComponentID == "" {
@@ -118,6 +124,50 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 	if platform5m.LatencySumMs != 200 {
 		t.Fatalf("platform 5m latency sum = %v; want 200", platform5m.LatencySumMs)
+	}
+}
+
+func TestCollectorLogsSummaryForDiagnostics(t *testing.T) {
+	store := &fakeAggregateStore{}
+	logger, hook := logtest.NewNullLogger()
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapper{
+			mapping: model.RouteMapping{AppID: "app-a", ComponentID: "svc-a"},
+			err:     errors.New("mapping missing"),
+		},
+		Logger: logger,
+		Now: func() time.Time {
+			return time.Unix(1710000007, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{
+		{URI: "/skip", Status: 200},
+		{RouteID: "route-a", URI: "/unknown", Status: 200, RequestTime: 0.01},
+	})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+
+	var sawSummary bool
+	for _, entry := range hook.Entries {
+		if entry.Message != "collected apisix access logs" {
+			continue
+		}
+		sawSummary = true
+		if entry.Data["log_count"] != 2 {
+			t.Fatalf("log_count = %v; want 2", entry.Data["log_count"])
+		}
+		if entry.Data["skipped_missing_route"] != 1 {
+			t.Fatalf("skipped_missing_route = %v; want 1", entry.Data["skipped_missing_route"])
+		}
+		if entry.Data["unknown_mapping_count"] != 1 {
+			t.Fatalf("unknown_mapping_count = %v; want 1", entry.Data["unknown_mapping_count"])
+		}
+	}
+	if !sawSummary {
+		t.Fatalf("missing collector summary log; entries=%#v", hook.Entries)
 	}
 }
 

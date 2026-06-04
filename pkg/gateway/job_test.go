@@ -17,7 +17,9 @@ type fakeRouteClient struct {
 }
 
 type fakeRouteMappingStore struct {
-	mappings []string
+	mappings       []string
+	replacedAppID  string
+	replacedRoutes []string
 }
 
 func (f *fakeRouteClient) List(_ context.Context, _ string) ([]*unstructured.Unstructured, error) {
@@ -31,6 +33,12 @@ func (f *fakeRouteClient) Update(_ context.Context, _ string, route *unstructure
 
 func (f *fakeRouteMappingStore) SaveRouteMapping(_ context.Context, mapping model.RouteMapping, _ time.Duration) error {
 	f.mappings = append(f.mappings, mapping.AppID)
+	return nil
+}
+
+func (f *fakeRouteMappingStore) ReplaceAppPrometheusRoutes(_ context.Context, appID string, routes []string) error {
+	f.replacedAppID = appID
+	f.replacedRoutes = append([]string(nil), routes...)
 	return nil
 }
 
@@ -160,6 +168,82 @@ func TestHTTPLoggerAttachJobMatchesRouteByServiceAliasAndStoresConsoleAppID(t *t
 	}
 }
 
+func TestHTTPLoggerAttachJobReplacesAppPrometheusRoutesWithCurrentScan(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name": "gr1ea4bc-8080-demo",
+			"labels": map[string]interface{}{
+				"creator":  "Rainbond",
+				"gr1ea4bc": "service_alias",
+			},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{map[string]interface{}{"name": "http-a"}},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:         client,
+		MappingStore:   store,
+		Namespaces:     []string{"tenant-ns"},
+		AppID:          "console-app-a",
+		MappingAppID:   "console-app-a",
+		ServiceAliases: []string{"gr1ea4bc"},
+		Config:         HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if store.replacedAppID != "console-app-a" {
+		t.Fatalf("replaced app id = %q; want console-app-a", store.replacedAppID)
+	}
+	want := "tenant-ns_gr1ea4bc-8080-demo_http-a"
+	if len(store.replacedRoutes) != 2 {
+		t.Fatalf("replaced routes = %#v; want parent and child routes", store.replacedRoutes)
+	}
+	if store.replacedRoutes[1] != want {
+		t.Fatalf("replaced child route = %q; want %q", store.replacedRoutes[1], want)
+	}
+}
+
+func TestHTTPLoggerAttachJobClearsAppPrometheusRoutesWhenTargetAppHasNoMatches(t *testing.T) {
+	other := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name": "gr7bd8bd-8080-demo",
+			"labels": map[string]interface{}{
+				"creator":  "Rainbond",
+				"gr7bd8bd": "service_alias",
+			},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{map[string]interface{}{"name": "http-b"}},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{other}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:         client,
+		MappingStore:   store,
+		Namespaces:     []string{"tenant-ns"},
+		AppID:          "console-app-a",
+		MappingAppID:   "console-app-a",
+		ServiceAliases: []string{"gr1ea4bc"},
+		Config:         HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if store.replacedAppID != "console-app-a" {
+		t.Fatalf("replaced app id = %q; want console-app-a", store.replacedAppID)
+	}
+	if len(store.replacedRoutes) != 0 {
+		t.Fatalf("replaced routes = %#v; want empty route index", store.replacedRoutes)
+	}
+}
+
 func TestHTTPLoggerAttachJobLogsRouteScanAndMappingSave(t *testing.T) {
 	matching := &unstructured.Unstructured{Object: map[string]interface{}{
 		"metadata": map[string]interface{}{
@@ -191,17 +275,22 @@ func TestHTTPLoggerAttachJobLogsRouteScanAndMappingSave(t *testing.T) {
 	if len(hook.Entries) == 0 {
 		t.Fatal("log entries length = 0; want diagnostic logs")
 	}
-	var sawScan, sawMapping bool
+	var sawScan, sawEnsure, sawMapping bool
 	for _, entry := range hook.Entries {
 		switch entry.Message {
 		case "scanned apisix routes for http-logger":
 			sawScan = sawScan || (entry.Data["namespace"] == "tenant-ns" && entry.Data["route_count"] == 1)
+		case "ensured route-level http-logger":
+			sawEnsure = sawEnsure || (entry.Data["collector_uri"] == "http://collector" && entry.Data["http_logger_timeout"] == 3 && entry.Data["http_logger_ssl_verify"] == false)
 		case "saved apisix route mapping":
 			sawMapping = sawMapping || (entry.Data["route_id"] == "route-a" && entry.Data["app_id"] == "console-app-a")
 		}
 	}
 	if !sawScan {
 		t.Fatalf("missing route scan log; entries=%#v", hook.Entries)
+	}
+	if !sawEnsure {
+		t.Fatalf("missing http-logger config log; entries=%#v", hook.Entries)
 	}
 	if !sawMapping {
 		t.Fatalf("missing route mapping log; entries=%#v", hook.Entries)

@@ -33,7 +33,16 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 		RequestTime          interface{} `json:"request_time"`
 		UpstreamStatus       interface{} `json:"upstream_status"`
 		UpstreamResponseTime interface{} `json:"upstream_response_time"`
+		Latency              interface{} `json:"latency"`
+		UpstreamLatency      interface{} `json:"upstream_latency"`
 		ClientIP             string      `json:"client_ip"`
+		Request              struct {
+			Method string `json:"method"`
+			URI    string `json:"uri"`
+		} `json:"request"`
+		Response struct {
+			Status interface{} `json:"status"`
+		} `json:"response"`
 	}
 	var raw rawLog
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -51,7 +60,29 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 	l.UpstreamStatus = flexibleInt(raw.UpstreamStatus)
 	l.UpstreamResponseTime = flexibleFloat(raw.UpstreamResponseTime)
 	l.ClientIP = raw.ClientIP
+	if l.Method == "" {
+		l.Method = raw.Request.Method
+	}
+	if l.URI == "" {
+		l.URI = raw.Request.URI
+	}
+	if l.Status == 0 {
+		l.Status = flexibleInt(raw.Response.Status)
+	}
+	if l.RequestTime == 0 {
+		l.RequestTime = millisecondsToSeconds(flexibleFloat(raw.Latency))
+	}
+	if l.UpstreamResponseTime == 0 {
+		l.UpstreamResponseTime = millisecondsToSeconds(flexibleFloat(raw.UpstreamLatency))
+	}
 	return nil
+}
+
+func millisecondsToSeconds(value float64) float64 {
+	if value == 0 {
+		return 0
+	}
+	return value / 1000
 }
 
 func flexibleInt(value interface{}) int {

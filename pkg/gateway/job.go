@@ -100,9 +100,18 @@ type RouteMappingStore interface {
 	SaveRouteMapping(ctx context.Context, mapping model.RouteMapping, ttl time.Duration) error
 }
 
+type AppPrometheusRouteReplacer interface {
+	ReplaceAppPrometheusRoutes(ctx context.Context, appID string, routes []string) error
+}
+
 func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 	if j.Client == nil {
 		return fmt.Errorf("route client is required")
+	}
+	appRoutes := make(map[string][]string)
+	appRouteSeen := make(map[string]map[string]struct{})
+	if targetAppID := firstNonEmptyString(j.MappingAppID, j.AppID); targetAppID != "" && len(j.ServiceAliases) > 0 {
+		appRoutes[targetAppID] = nil
 	}
 	for _, namespace := range j.Namespaces {
 		if j.Logger != nil {
@@ -152,25 +161,31 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 			}
 			if j.Logger != nil {
 				j.Logger.WithFields(logrus.Fields{
-					"namespace":      namespace,
-					"route":          route.GetName(),
-					"changed":        changed,
-					"collector_uri":  j.Config.URI,
-					"mapping_app_id": j.MappingAppID,
+					"namespace":              namespace,
+					"route":                  route.GetName(),
+					"changed":                changed,
+					"collector_uri":          j.Config.URI,
+					"http_logger_timeout":    j.Config.Timeout,
+					"http_logger_ssl_verify": j.Config.SSLVerify,
+					"mapping_app_id":         j.MappingAppID,
 				}).Info("ensured route-level http-logger")
 			}
 			if !changed {
-				if err := j.saveMappings(ctx, namespace, route); err != nil {
+				mappings, err := j.saveMappings(ctx, namespace, route)
+				if err != nil {
 					return err
 				}
+				rememberAppPrometheusRoutes(appRoutes, appRouteSeen, mappings)
 				continue
 			}
 			if err := j.Client.Update(ctx, namespace, route); err != nil {
 				return fmt.Errorf("update apisix route %s/%s: %w", namespace, route.GetName(), err)
 			}
-			if err := j.saveMappings(ctx, namespace, route); err != nil {
+			mappings, err := j.saveMappings(ctx, namespace, route)
+			if err != nil {
 				return err
 			}
+			rememberAppPrometheusRoutes(appRoutes, appRouteSeen, mappings)
 			if j.Logger != nil {
 				j.Logger.WithFields(logrus.Fields{
 					"namespace":     namespace,
@@ -179,6 +194,9 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 				}).Info("attached route-level http-logger")
 			}
 		}
+	}
+	if err := j.replaceAppPrometheusRoutes(ctx, appRoutes); err != nil {
+		return err
 	}
 	return nil
 }
@@ -244,7 +262,7 @@ func (j *HTTPLoggerAttachJob) Start(ctx context.Context) {
 	}()
 }
 
-func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string, route *unstructured.Unstructured) error {
+func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string, route *unstructured.Unstructured) ([]model.RouteMapping, error) {
 	if j.MappingStore == nil {
 		if j.Logger != nil && route != nil {
 			j.Logger.WithFields(logrus.Fields{
@@ -252,7 +270,7 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 				"route":     route.GetName(),
 			}).Debug("skip saving apisix route mappings because mapping store is nil")
 		}
-		return nil
+		return nil, nil
 	}
 	mappings := RouteMappingsFromApisixRoute(namespace, route)
 	if j.Logger != nil && route != nil {
@@ -262,13 +280,14 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 			"mapping_count": len(mappings),
 		}).Info("generated apisix route mappings")
 	}
-	for _, mapping := range mappings {
+	for i, mapping := range mappings {
 		if j.MappingAppID != "" {
 			mapping.AppID = j.MappingAppID
 		}
 		if err := j.MappingStore.SaveRouteMapping(ctx, mapping, 10*time.Minute); err != nil {
-			return fmt.Errorf("save route mapping %s: %w", mapping.RouteID, err)
+			return nil, fmt.Errorf("save route mapping %s: %w", mapping.RouteID, err)
 		}
+		mappings[i] = mapping
 		if j.Logger != nil {
 			j.Logger.WithFields(logrus.Fields{
 				"namespace":        namespace,
@@ -281,7 +300,7 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 			}).Info("saved apisix route mapping")
 		}
 	}
-	return nil
+	return mappings, nil
 }
 
 func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstructured) []model.RouteMapping {
@@ -296,7 +315,7 @@ func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstruct
 		ComponentID:     firstLabel(labels, "service_id", "component_id"),
 		ServiceAlias:    findServiceAlias(labels),
 		Namespace:       namespace,
-		PrometheusRoute: route.GetName(),
+		PrometheusRoute: prometheusRouteLabel(namespace, route.GetName(), ""),
 	}
 
 	result := []model.RouteMapping{mapping}
@@ -315,12 +334,62 @@ func RouteMappingsFromApisixRoute(namespace string, route *unstructured.Unstruct
 		}
 		child := mapping
 		child.RouteID = name
+		child.PrometheusRoute = prometheusRouteLabel(namespace, route.GetName(), name)
 		if backendService := firstHTTPBackendServiceName(httpRoute); backendService != "" {
 			child.ComponentID = firstNonEmptyString(child.ComponentID, backendService)
 		}
 		result = append(result, child)
 	}
 	return result
+}
+
+func rememberAppPrometheusRoutes(appRoutes map[string][]string, seen map[string]map[string]struct{}, mappings []model.RouteMapping) {
+	for _, mapping := range mappings {
+		if mapping.AppID == "" || mapping.PrometheusRoute == "" {
+			continue
+		}
+		if seen[mapping.AppID] == nil {
+			seen[mapping.AppID] = make(map[string]struct{})
+		}
+		if _, ok := seen[mapping.AppID][mapping.PrometheusRoute]; ok {
+			continue
+		}
+		seen[mapping.AppID][mapping.PrometheusRoute] = struct{}{}
+		appRoutes[mapping.AppID] = append(appRoutes[mapping.AppID], mapping.PrometheusRoute)
+	}
+}
+
+func (j *HTTPLoggerAttachJob) replaceAppPrometheusRoutes(ctx context.Context, appRoutes map[string][]string) error {
+	replacer, ok := j.MappingStore.(AppPrometheusRouteReplacer)
+	if !ok || replacer == nil {
+		return nil
+	}
+	for appID, routes := range appRoutes {
+		if err := replacer.ReplaceAppPrometheusRoutes(ctx, appID, routes); err != nil {
+			return fmt.Errorf("replace app prometheus routes for %s: %w", appID, err)
+		}
+		if j.Logger != nil {
+			j.Logger.WithFields(logrus.Fields{
+				"app_id":      appID,
+				"route_count": len(routes),
+				"routes":      strings.Join(routes, ","),
+			}).Info("replaced app prometheus route index")
+		}
+	}
+	return nil
+}
+
+func prometheusRouteLabel(namespace, routeName, httpRouteName string) string {
+	if httpRouteName == "" {
+		if namespace == "" {
+			return routeName
+		}
+		return namespace + "_" + routeName
+	}
+	if namespace == "" {
+		return routeName + "_" + httpRouteName
+	}
+	return namespace + "_" + routeName + "_" + httpRouteName
 }
 
 func firstLabel(labels map[string]string, keys ...string) string {

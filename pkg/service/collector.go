@@ -71,8 +71,10 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 			"bucket_unix": bucket,
 		}).Info("collecting apisix access logs")
 	}
+	var skippedMissingRoute, resolvedCount, unknownMappingCount int
 	for _, log := range logs {
 		if log.RouteID == "" && log.ServiceID == "" {
+			skippedMissingRoute++
 			if c.logger != nil {
 				c.logger.WithFields(logrus.Fields{
 					"uri":    chooseURI(log),
@@ -96,6 +98,9 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 				AppID:       "unknown_app",
 				ComponentID: "unknown_component",
 			}
+			unknownMappingCount++
+		} else {
+			resolvedCount++
 		}
 		routeGroup := c.resolveRouteGroup(ctx, mapping, log)
 		metric := metricFromLog(routeGroup, mapping, log)
@@ -120,6 +125,14 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 				}
 			}
 		}
+	}
+	if c.logger != nil {
+		c.logger.WithFields(logrus.Fields{
+			"log_count":             len(logs),
+			"skipped_missing_route": skippedMissingRoute,
+			"mapped_count":          resolvedCount,
+			"unknown_mapping_count": unknownMappingCount,
+		}).Info("collected apisix access logs")
 	}
 	return nil
 }

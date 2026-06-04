@@ -47,8 +47,11 @@ func TestRouteMappingsFromApisixRouteUsesRainbondLabelsAndHTTPRouteNames(t *test
 	if mappings[0].ServiceAlias != "web-service" {
 		t.Fatalf("service alias = %q; want web-service", mappings[0].ServiceAlias)
 	}
-	if mappings[0].PrometheusRoute != "domain-p-p" {
-		t.Fatalf("prometheus route = %q; want domain-p-p", mappings[0].PrometheusRoute)
+	if mappings[0].PrometheusRoute != "tenant-ns_domain-p-p" {
+		t.Fatalf("prometheus route = %q; want tenant-ns_domain-p-p", mappings[0].PrometheusRoute)
+	}
+	if mappings[1].PrometheusRoute != "tenant-ns_domain-p-p_apisix-http-route-id" {
+		t.Fatalf("second prometheus route = %q; want tenant-ns_domain-p-p_apisix-http-route-id", mappings[1].PrometheusRoute)
 	}
 }
 

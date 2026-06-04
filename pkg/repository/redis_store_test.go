@@ -49,7 +49,15 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 			f.sets = make(map[string]interface{})
 		}
 		existing, _ := f.sets[args[1]].([]interface{})
-		f.sets[args[1]] = append(existing, args[2])
+		for _, member := range args[2:] {
+			existing = append(existing, member)
+		}
+		f.sets[args[1]] = existing
+		return int64(1), nil
+	case "DEL":
+		if f.sets != nil {
+			delete(f.sets, args[1])
+		}
 		return int64(1), nil
 	default:
 		return int64(1), nil
@@ -309,5 +317,27 @@ func TestRedisStoreIndexesPrometheusRoutesByApp(t *testing.T) {
 	}
 	if len(routes) != 1 || routes[0] != "prom-route-a" {
 		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestRedisStoreReplacesAppPrometheusRoutes(t *testing.T) {
+	client := &fakeRedisClient{
+		sets: map[string]interface{}{
+			"nm:app:app-a:prometheus-routes": []interface{}{"old-route"},
+		},
+	}
+	store := NewRedisStore(client)
+
+	err := store.ReplaceAppPrometheusRoutes(context.Background(), "app-a", []string{"route-a", "route-b"})
+	if err != nil {
+		t.Fatalf("ReplaceAppPrometheusRoutes() unexpected error: %v", err)
+	}
+
+	routes, err := store.GetAppPrometheusRoutes(context.Background(), "app-a")
+	if err != nil {
+		t.Fatalf("GetAppPrometheusRoutes() unexpected error: %v", err)
+	}
+	if len(routes) != 2 || routes[0] != "route-a" || routes[1] != "route-b" {
+		t.Fatalf("routes = %#v; want route-a and route-b", routes)
 	}
 }

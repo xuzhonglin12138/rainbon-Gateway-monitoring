@@ -216,6 +216,11 @@ type RouteGroupItem struct {
 	ServiceAlias       string  `json:"service_alias,omitempty"`
 }
 
+type RouteGroupBucketPoint struct {
+	Timestamp int64
+	Metric    RouteGroupMetric
+}
+
 func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 	return RouteGroupItem{
 		RouteGroup:         metric.RouteGroup,

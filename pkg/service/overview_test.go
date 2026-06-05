@@ -12,13 +12,19 @@ import (
 )
 
 type fakeRouteGroupOverviewStore struct {
-	items []model.RouteGroupItem
-	scope model.AggregateScope
+	items   []model.RouteGroupItem
+	buckets []model.RouteGroupBucketPoint
+	scope   model.AggregateScope
 }
 
 func (f *fakeRouteGroupOverviewStore) ListRouteGroups(_ context.Context, scope model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
 	f.scope = scope
 	return f.items, nil
+}
+
+func (f *fakeRouteGroupOverviewStore) ListRouteGroupBucketPoints(_ context.Context, scope model.AggregateScope, _ model.Window) ([]model.RouteGroupBucketPoint, error) {
+	f.scope = scope
+	return f.buckets, nil
 }
 
 func TestOverviewServiceGetsPlatformOverview(t *testing.T) {
@@ -235,28 +241,41 @@ func TestOverviewServiceGetsComponentOverviewFromRouteGroups(t *testing.T) {
 }
 
 func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
-	now := time.Unix(1000, 0)
 	store := &fakeRouteGroupOverviewStore{
-		items: []model.RouteGroupItem{
-			{RouteGroup: "/api/ping", RequestCount: 30, ErrorCount: 3, AvgLatencyMs: 50},
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1000,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 30,
+					ErrorCount:   3,
+					LatencySumMs: 1500,
+					LatencyCount: 30,
+				},
+			},
+			{
+				Timestamp: 1005,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 10,
+					ErrorCount:   2,
+					LatencySumMs: 800,
+					LatencyCount: 10,
+				},
+			},
 		},
 	}
-	service := NewOverviewService(OverviewConfig{
-		RouteGroupStore: store,
-		Now:             func() time.Time { return now },
-	})
+	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
 
 	trend, err := service.GetComponentRealtimeTrend(context.Background(), "svc-a")
 	if err != nil {
 		t.Fatalf("GetComponentRealtimeTrend() unexpected error: %v", err)
 	}
-	if len(trend.Points) != 1 {
-		t.Fatalf("points length = %d; want 1", len(trend.Points))
+	if len(trend.Points) != 2 {
+		t.Fatalf("points length = %d; want 2", len(trend.Points))
 	}
-	if trend.Points[0].Timestamp != now.Unix() {
-		t.Fatalf("timestamp = %v; want %v", trend.Points[0].Timestamp, now.Unix())
+	if trend.Points[0].Timestamp != 1000 || trend.Points[1].Timestamp != 1005 {
+		t.Fatalf("timestamps = %#v", trend.Points)
 	}
-	if trend.Points[0].RequestPerSecond != float64(30)/model.Window5m.Duration().Seconds() {
+	if trend.Points[0].RequestPerSecond != float64(30)/model.BucketSize.Seconds() {
 		t.Fatalf("request per second = %v", trend.Points[0].RequestPerSecond)
 	}
 	if trend.Points[0].ErrorRate != 0.1 {
@@ -264,6 +283,9 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	}
 	if trend.Points[0].AvgLatencyMs != 50 {
 		t.Fatalf("latency = %v; want 50", trend.Points[0].AvgLatencyMs)
+	}
+	if trend.Points[1].ErrorRate != 0.2 || trend.Points[1].AvgLatencyMs != 80 {
+		t.Fatalf("second point = %#v", trend.Points[1])
 	}
 }
 

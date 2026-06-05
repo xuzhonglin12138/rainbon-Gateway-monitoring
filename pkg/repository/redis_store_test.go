@@ -9,12 +9,13 @@ import (
 )
 
 type fakeRedisClient struct {
-	calls   [][]string
-	keys    []interface{}
-	hash    []interface{}
-	get     interface{}
-	members []interface{}
-	sets    map[string]interface{}
+	calls     [][]string
+	keys      []interface{}
+	hash      []interface{}
+	hashByKey map[string][]interface{}
+	get       interface{}
+	members   []interface{}
+	sets      map[string]interface{}
 }
 
 func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, error) {
@@ -23,6 +24,11 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 	case "KEYS":
 		return f.keys, nil
 	case "HGETALL":
+		if f.hashByKey != nil {
+			if value, ok := f.hashByKey[args[1]]; ok {
+				return value, nil
+			}
+		}
 		return f.hash, nil
 	case "GET":
 		if f.sets != nil {
@@ -287,6 +293,56 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 	}
 	if items[0].ThroughputPerSecond != 0.04 {
 		t.Fatalf("throughput = %v; want 0.04", items[0].ThroughputPerSecond)
+	}
+}
+
+func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
+	client := &fakeRedisClient{
+		keys: []interface{}{
+			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000005",
+			"nm:component:svc-a:5m:route-group:_api_order:bucket:1710000005",
+			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000010",
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "2",
+				"error_count", "1",
+				"latency_count", "2",
+				"latency_sum_ms", "40",
+			},
+			"nm:component:svc-a:5m:route-group:_api_order:bucket:1710000005": {
+				"route_group", "/api/order",
+				"request_count", "3",
+				"latency_count", "3",
+				"latency_sum_ms", "90",
+			},
+			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000010": {
+				"route_group", "/api/ping",
+				"request_count", "4",
+				"error_count", "2",
+				"latency_count", "4",
+				"latency_sum_ms", "200",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000015, 0)
+	}
+
+	points, err := store.ListRouteGroupBucketPoints(context.Background(), model.AggregateScope{Kind: model.ScopeComponent, ID: "svc-a"}, model.Window5m)
+	if err != nil {
+		t.Fatalf("ListRouteGroupBucketPoints() unexpected error: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("points length = %d; want 2", len(points))
+	}
+	if points[0].Timestamp != 1710000005 || points[0].Metric.RequestCount != 5 || points[0].Metric.ErrorCount != 1 {
+		t.Fatalf("first point = %#v", points[0])
+	}
+	if points[1].Timestamp != 1710000010 || points[1].Metric.RequestCount != 4 || points[1].Metric.ErrorCount != 2 {
+		t.Fatalf("second point = %#v", points[1])
 	}
 }
 

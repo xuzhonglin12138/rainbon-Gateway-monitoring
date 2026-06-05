@@ -177,6 +177,50 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 	return items, nil
 }
 
+func (s *RedisStore) ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
+	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	if err != nil {
+		return nil, err
+	}
+	keys := stringSlice(keysValue)
+	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	pointsByBucket := make(map[int64]model.RouteGroupMetric)
+	for _, key := range keys {
+		bucketUnix, ok := bucketUnixFromKey(key)
+		if !ok || bucketUnix < minBucket {
+			continue
+		}
+		values, err := s.client.Do(ctx, "HGETALL", key)
+		if err != nil {
+			return nil, err
+		}
+		metric := metricFromHash(values)
+		if metric.RouteGroup == "" {
+			continue
+		}
+		current := pointsByBucket[bucketUnix]
+		current.RequestCount += metric.RequestCount
+		current.ErrorCount += metric.ErrorCount
+		current.UpstreamErrorCount += metric.UpstreamErrorCount
+		current.LatencySumMs += metric.LatencySumMs
+		current.LatencyCount += metric.LatencyCount
+		pointsByBucket[bucketUnix] = current
+	}
+	timestamps := make([]int64, 0, len(pointsByBucket))
+	for timestamp := range pointsByBucket {
+		timestamps = append(timestamps, timestamp)
+	}
+	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i] < timestamps[j] })
+	points := make([]model.RouteGroupBucketPoint, 0, len(timestamps))
+	for _, timestamp := range timestamps {
+		points = append(points, model.RouteGroupBucketPoint{
+			Timestamp: timestamp,
+			Metric:    pointsByBucket[timestamp],
+		})
+	}
+	return points, nil
+}
+
 func (s *RedisStore) RefreshRouteGroupSnapshots(ctx context.Context) error {
 	scopesValue, err := s.client.Do(ctx, "SMEMBERS", scopeRegistryKey)
 	if err != nil {

@@ -28,6 +28,7 @@ type routeIndexStore interface {
 
 type routeGroupOverviewStore interface {
 	ListRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error)
+	ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error)
 }
 
 type OverviewService struct {
@@ -152,6 +153,28 @@ func overviewFromRouteGroups(componentID string, window model.Window, items []mo
 	}
 }
 
+func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint) []model.OverviewTrendPoint {
+	points := make([]model.OverviewTrendPoint, 0, len(buckets))
+	bucketSeconds := model.BucketSize.Seconds()
+	if bucketSeconds <= 0 {
+		bucketSeconds = 1
+	}
+	for _, bucket := range buckets {
+		metric := bucket.Metric
+		var errorRate float64
+		if metric.RequestCount > 0 {
+			errorRate = float64(metric.ErrorCount) / float64(metric.RequestCount)
+		}
+		points = append(points, model.OverviewTrendPoint{
+			Timestamp:        bucket.Timestamp,
+			RequestPerSecond: float64(metric.RequestCount) / bucketSeconds,
+			ErrorRate:        errorRate,
+			AvgLatencyMs:     metric.AvgLatencyMs(),
+		})
+	}
+	return points
+}
+
 func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context) (model.OverviewTrend, error) {
 	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "")
 }
@@ -166,22 +189,15 @@ func (s *OverviewService) GetAppRealtimeTrend(ctx context.Context, appID string)
 
 func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, componentID string) (model.OverviewTrend, error) {
 	if s.routeGroupStore != nil {
-		items, err := s.routeGroupStore.ListRouteGroups(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, model.Window5m, 200, "summary")
+		buckets, err := s.routeGroupStore.ListRouteGroupBucketPoints(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, model.Window5m)
 		if err != nil {
 			return model.OverviewTrend{}, err
 		}
-		if len(items) > 0 {
-			overview := overviewFromRouteGroups(componentID, model.Window5m, items)
+		if len(buckets) > 0 {
 			return model.OverviewTrend{
 				Scope:  model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
 				Window: model.Window5m,
-				Points: []model.OverviewTrendPoint{{
-					Timestamp:         s.now().Unix(),
-					RequestPerSecond:  overview.ThroughputPerSecond,
-					ErrorRate:         overview.ErrorRate,
-					AvgLatencyMs:      overview.AvgLatencyMs,
-					EgressBytesPerSec: overview.EgressBytesPerSec,
-				}},
+				Points: componentTrendPointsFromBuckets(buckets),
 			}, nil
 		}
 	}

@@ -131,4 +131,10 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 	if logFormat["route_name"] != "$route_name" {
 		t.Fatalf("route_name log format = %q; want $route_name", logFormat["route_name"])
 	}
+	if logFormat["body_bytes_sent"] != "$body_bytes_sent" {
+		t.Fatalf("body_bytes_sent log format = %q; want $body_bytes_sent", logFormat["body_bytes_sent"])
+	}
+	if logFormat["bytes_sent"] != "$bytes_sent" {
+		t.Fatalf("bytes_sent log format = %q; want $bytes_sent", logFormat["bytes_sent"])
+	}
 }

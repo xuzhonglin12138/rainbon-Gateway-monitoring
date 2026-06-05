@@ -84,6 +84,7 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 		UpstreamErrorCount: 1,
 		LatencySumMs:       86,
 		LatencyCount:       1,
+		EgressBytes:        4096,
 		AppID:              "app-a",
 		TeamID:             "team-a",
 		ComponentID:        "svc-a",
@@ -110,6 +111,16 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 	}
 	if !sawScopeRegister {
 		t.Fatalf("expected scope registration, got %#v", client.calls)
+	}
+
+	var sawEgressWrite bool
+	for _, call := range client.calls {
+		if len(call) == 4 && call[0] == "HINCRBYFLOAT" && call[2] == "egress_bytes" && call[3] == "4096" {
+			sawEgressWrite = true
+		}
+	}
+	if !sawEgressWrite {
+		t.Fatalf("expected egress_bytes HINCRBYFLOAT, got %#v", client.calls)
 	}
 }
 
@@ -310,12 +321,14 @@ func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 				"error_count", "1",
 				"latency_count", "2",
 				"latency_sum_ms", "40",
+				"egress_bytes", "200",
 			},
 			"nm:component:svc-a:5m:route-group:_api_order:bucket:1710000005": {
 				"route_group", "/api/order",
 				"request_count", "3",
 				"latency_count", "3",
 				"latency_sum_ms", "90",
+				"egress_bytes", "300",
 			},
 			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000010": {
 				"route_group", "/api/ping",
@@ -323,6 +336,7 @@ func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 				"error_count", "2",
 				"latency_count", "4",
 				"latency_sum_ms", "200",
+				"egress_bytes", "800",
 			},
 		},
 	}
@@ -341,8 +355,14 @@ func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 	if points[0].Timestamp != 1710000005 || points[0].Metric.RequestCount != 5 || points[0].Metric.ErrorCount != 1 {
 		t.Fatalf("first point = %#v", points[0])
 	}
+	if points[0].Metric.EgressBytes != 500 {
+		t.Fatalf("first egress bytes = %d; want 500", points[0].Metric.EgressBytes)
+	}
 	if points[1].Timestamp != 1710000010 || points[1].Metric.RequestCount != 4 || points[1].Metric.ErrorCount != 2 {
 		t.Fatalf("second point = %#v", points[1])
+	}
+	if points[1].Metric.EgressBytes != 800 {
+		t.Fatalf("second egress bytes = %d; want 800", points[1].Metric.EgressBytes)
 	}
 }
 

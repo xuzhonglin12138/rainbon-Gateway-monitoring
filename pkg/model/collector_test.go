@@ -12,7 +12,9 @@ func TestApisixAccessLogAcceptsStringNumberFields(t *testing.T) {
 		"status":"503",
 		"request_time":"0.086",
 		"upstream_status":"502",
-		"upstream_response_time":"0.081"
+		"upstream_response_time":"0.081",
+		"body_bytes_sent":"2048",
+		"bytes_sent":"3072"
 	}`), &log)
 	if err != nil {
 		t.Fatalf("UnmarshalJSON() unexpected error: %v", err)
@@ -26,6 +28,12 @@ func TestApisixAccessLogAcceptsStringNumberFields(t *testing.T) {
 	if log.UpstreamStatus != 502 {
 		t.Fatalf("upstream_status = %d; want 502", log.UpstreamStatus)
 	}
+	if log.BodyBytesSent != 2048 {
+		t.Fatalf("body_bytes_sent = %d; want 2048", log.BodyBytesSent)
+	}
+	if log.BytesSent != 3072 {
+		t.Fatalf("bytes_sent = %d; want 3072", log.BytesSent)
+	}
 }
 
 func TestApisixAccessLogAcceptsDefaultHTTPLoggerPayload(t *testing.T) {
@@ -38,6 +46,7 @@ func TestApisixAccessLogAcceptsDefaultHTTPLoggerPayload(t *testing.T) {
 		"response":{"status":503},
 		"latency":86,
 		"upstream_latency":81,
+		"response_size":4096,
 		"client_ip":"10.0.0.1"
 	}`), &log)
 	if err != nil {
@@ -60,5 +69,8 @@ func TestApisixAccessLogAcceptsDefaultHTTPLoggerPayload(t *testing.T) {
 	}
 	if log.UpstreamResponseTime != 0.081 {
 		t.Fatalf("upstream_response_time = %v; want 0.081", log.UpstreamResponseTime)
+	}
+	if log.ResponseSize != 4096 {
+		t.Fatalf("response_size = %d; want 4096", log.ResponseSize)
 	}
 }

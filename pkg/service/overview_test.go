@@ -210,8 +210,8 @@ func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 func TestOverviewServiceGetsComponentOverviewFromRouteGroups(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
 		items: []model.RouteGroupItem{
-			{RouteGroup: "/api/ping", RequestCount: 8, ErrorCount: 1, AvgLatencyMs: 20},
-			{RouteGroup: "/api/order", RequestCount: 2, ErrorCount: 1, AvgLatencyMs: 60},
+			{RouteGroup: "/api/ping", RequestCount: 8, ErrorCount: 1, AvgLatencyMs: 20, EgressBytes: 3000},
+			{RouteGroup: "/api/order", RequestCount: 2, ErrorCount: 1, AvgLatencyMs: 60, EgressBytes: 1500},
 		},
 	}
 	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
@@ -238,6 +238,12 @@ func TestOverviewServiceGetsComponentOverviewFromRouteGroups(t *testing.T) {
 	if overview.ThroughputPerSecond != float64(10)/model.Window5m.Duration().Seconds() {
 		t.Fatalf("throughput = %v; want %v", overview.ThroughputPerSecond, float64(10)/model.Window5m.Duration().Seconds())
 	}
+	if overview.EgressBytesPerSec != 15 {
+		t.Fatalf("egress = %v; want 15", overview.EgressBytesPerSec)
+	}
+	if overview.NetworkTransmitBps != 15 {
+		t.Fatalf("network transmit = %v; want 15", overview.NetworkTransmitBps)
+	}
 }
 
 func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
@@ -250,6 +256,7 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 					ErrorCount:   3,
 					LatencySumMs: 1500,
 					LatencyCount: 30,
+					EgressBytes:  3000,
 				},
 			},
 			{
@@ -259,6 +266,7 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 					ErrorCount:   2,
 					LatencySumMs: 800,
 					LatencyCount: 10,
+					EgressBytes:  2000,
 				},
 			},
 		},
@@ -284,8 +292,14 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	if trend.Points[0].AvgLatencyMs != 50 {
 		t.Fatalf("latency = %v; want 50", trend.Points[0].AvgLatencyMs)
 	}
+	if trend.Points[0].EgressBytesPerSec != 600 {
+		t.Fatalf("egress = %v; want 600", trend.Points[0].EgressBytesPerSec)
+	}
 	if trend.Points[1].ErrorRate != 0.2 || trend.Points[1].AvgLatencyMs != 80 {
 		t.Fatalf("second point = %#v", trend.Points[1])
+	}
+	if trend.Points[1].EgressBytesPerSec != 400 {
+		t.Fatalf("second egress = %v; want 400", trend.Points[1].EgressBytesPerSec)
 	}
 }
 

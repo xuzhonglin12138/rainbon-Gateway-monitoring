@@ -18,6 +18,9 @@ type ApisixAccessLog struct {
 	RequestTime          float64 `json:"request_time"`
 	UpstreamStatus       int     `json:"upstream_status"`
 	UpstreamResponseTime float64 `json:"upstream_response_time"`
+	BodyBytesSent        int64   `json:"body_bytes_sent"`
+	BytesSent            int64   `json:"bytes_sent"`
+	ResponseSize         int64   `json:"response_size"`
 	ClientIP             string  `json:"client_ip"`
 }
 
@@ -37,6 +40,10 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 		UpstreamResponseTime interface{} `json:"upstream_response_time"`
 		Latency              interface{} `json:"latency"`
 		UpstreamLatency      interface{} `json:"upstream_latency"`
+		BodyBytesSent        interface{} `json:"body_bytes_sent"`
+		BytesSent            interface{} `json:"bytes_sent"`
+		ResponseSize         interface{} `json:"response_size"`
+		ResponseBytes        interface{} `json:"response_bytes"`
 		ClientIP             string      `json:"client_ip"`
 		Request              struct {
 			Method string `json:"method"`
@@ -44,6 +51,8 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 		} `json:"request"`
 		Response struct {
 			Status interface{} `json:"status"`
+			Size   interface{} `json:"size"`
+			Bytes  interface{} `json:"bytes"`
 		} `json:"response"`
 	}
 	var raw rawLog
@@ -62,6 +71,9 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 	l.RequestTime = flexibleFloat(raw.RequestTime)
 	l.UpstreamStatus = flexibleInt(raw.UpstreamStatus)
 	l.UpstreamResponseTime = flexibleFloat(raw.UpstreamResponseTime)
+	l.BodyBytesSent = flexibleInt64(raw.BodyBytesSent)
+	l.BytesSent = flexibleInt64(raw.BytesSent)
+	l.ResponseSize = flexibleInt64(raw.ResponseSize)
 	l.ClientIP = raw.ClientIP
 	if l.Method == "" {
 		l.Method = raw.Request.Method
@@ -77,6 +89,18 @@ func (l *ApisixAccessLog) UnmarshalJSON(data []byte) error {
 	}
 	if l.UpstreamResponseTime == 0 {
 		l.UpstreamResponseTime = millisecondsToSeconds(flexibleFloat(raw.UpstreamLatency))
+	}
+	if l.ResponseSize == 0 {
+		l.ResponseSize = flexibleInt64(raw.ResponseSize)
+	}
+	if l.ResponseSize == 0 {
+		l.ResponseSize = flexibleInt64(raw.ResponseBytes)
+	}
+	if l.ResponseSize == 0 {
+		l.ResponseSize = flexibleInt64(raw.Response.Size)
+	}
+	if l.ResponseSize == 0 {
+		l.ResponseSize = flexibleInt64(raw.Response.Bytes)
 	}
 	return nil
 }
@@ -94,6 +118,18 @@ func flexibleInt(value interface{}) int {
 		return int(typed)
 	case string:
 		parsed, _ := strconv.Atoi(typed)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func flexibleInt64(value interface{}) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case string:
+		parsed, _ := strconv.ParseInt(typed, 10, 64)
 		return parsed
 	default:
 		return 0
@@ -163,6 +199,7 @@ type RouteGroupMetric struct {
 	UpstreamErrorCount int64   `json:"upstream_error_count"`
 	LatencySumMs       float64 `json:"latency_sum_ms"`
 	LatencyCount       int64   `json:"latency_count"`
+	EgressBytes        int64   `json:"egress_bytes"`
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
 	TeamName           string  `json:"team_name,omitempty"`
@@ -204,6 +241,7 @@ type RouteGroupItem struct {
 	UpstreamErrorCount int64   `json:"upstream_error_count"`
 	UpstreamErrorRate  float64 `json:"upstream_error_rate"`
 	AvgLatencyMs       float64 `json:"avg_latency_ms"`
+	EgressBytes        int64   `json:"egress_bytes,omitempty"`
 	AppID              string  `json:"app_id,omitempty"`
 	TeamID             string  `json:"team_id,omitempty"`
 	TeamName           string  `json:"team_name,omitempty"`
@@ -230,6 +268,7 @@ func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 		UpstreamErrorCount: metric.UpstreamErrorCount,
 		UpstreamErrorRate:  metric.UpstreamErrorRate(),
 		AvgLatencyMs:       metric.AvgLatencyMs(),
+		EgressBytes:        metric.EgressBytes,
 		AppID:              metric.AppID,
 		TeamID:             metric.TeamID,
 		TeamName:           metric.TeamName,

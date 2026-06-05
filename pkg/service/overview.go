@@ -123,11 +123,13 @@ func overviewFromRouteGroups(componentID string, window model.Window, items []mo
 	var requestCount float64
 	var errorCount float64
 	var latencyWeightedSum float64
+	var egressBytes float64
 	for _, item := range items {
 		requests := float64(item.RequestCount)
 		requestCount += requests
 		errorCount += float64(item.ErrorCount)
 		latencyWeightedSum += item.AvgLatencyMs * requests
+		egressBytes += float64(item.EgressBytes)
 	}
 	var errorRate float64
 	if requestCount > 0 {
@@ -141,6 +143,7 @@ func overviewFromRouteGroups(componentID string, window model.Window, items []mo
 	if windowSeconds <= 0 {
 		windowSeconds = 1
 	}
+	egressBytesPerSecond := egressBytes / windowSeconds
 	return model.Overview{
 		Scope:               model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
 		Window:              window,
@@ -148,6 +151,8 @@ func overviewFromRouteGroups(componentID string, window model.Window, items []mo
 		ErrorCount:          errorCount,
 		ErrorRate:           errorRate,
 		AvgLatencyMs:        avgLatency,
+		EgressBytesPerSec:   egressBytesPerSecond,
+		NetworkTransmitBps:  egressBytesPerSecond,
 		ThroughputPerSecond: requestCount / windowSeconds,
 		EvidenceLevel:       "A",
 	}
@@ -166,10 +171,11 @@ func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint) []mo
 			errorRate = float64(metric.ErrorCount) / float64(metric.RequestCount)
 		}
 		points = append(points, model.OverviewTrendPoint{
-			Timestamp:        bucket.Timestamp,
-			RequestPerSecond: float64(metric.RequestCount) / bucketSeconds,
-			ErrorRate:        errorRate,
-			AvgLatencyMs:     metric.AvgLatencyMs(),
+			Timestamp:         bucket.Timestamp,
+			RequestPerSecond:  float64(metric.RequestCount) / bucketSeconds,
+			ErrorRate:         errorRate,
+			AvgLatencyMs:      metric.AvgLatencyMs(),
+			EgressBytesPerSec: float64(metric.EgressBytes) / bucketSeconds,
 		})
 	}
 	return points

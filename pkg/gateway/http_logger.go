@@ -46,6 +46,8 @@ func DefaultHTTPLoggerLogFormat() map[string]string {
 		"request_time":           "$request_time",
 		"upstream_status":        "$upstream_status",
 		"upstream_response_time": "$upstream_response_time",
+		"body_bytes_sent":        "$body_bytes_sent",
+		"bytes_sent":             "$bytes_sent",
 		"client_ip":              "$remote_addr",
 	}
 }

@@ -46,6 +46,7 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		{"upstream_error_count", float64(metric.UpstreamErrorCount)},
 		{"latency_sum_ms", metric.LatencySumMs},
 		{"latency_count", float64(metric.LatencyCount)},
+		{"egress_bytes", float64(metric.EgressBytes)},
 	}
 	for _, update := range updates {
 		if update.value == 0 {
@@ -204,6 +205,7 @@ func (s *RedisStore) ListRouteGroupBucketPoints(ctx context.Context, scope model
 		current.UpstreamErrorCount += metric.UpstreamErrorCount
 		current.LatencySumMs += metric.LatencySumMs
 		current.LatencyCount += metric.LatencyCount
+		current.EgressBytes += metric.EgressBytes
 		pointsByBucket[bucketUnix] = current
 	}
 	timestamps := make([]int64, 0, len(pointsByBucket))
@@ -282,6 +284,7 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 		current.UpstreamErrorCount += metric.UpstreamErrorCount
 		current.LatencySumMs += metric.LatencySumMs
 		current.LatencyCount += metric.LatencyCount
+		current.EgressBytes += metric.EgressBytes
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
 		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
@@ -333,6 +336,7 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 		current.UpstreamErrorCount += metric.UpstreamErrorCount
 		current.LatencySumMs += metric.LatencySumMs
 		current.LatencyCount += metric.LatencyCount
+		current.EgressBytes += metric.EgressBytes
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
 		current.TeamAlias = firstNonEmpty(current.TeamAlias, metric.TeamAlias)
@@ -374,6 +378,7 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 		current.UpstreamErrorCount += metric.UpstreamErrorCount
 		current.LatencySumMs += metric.LatencySumMs
 		current.LatencyCount += metric.LatencyCount
+		current.EgressBytes += metric.EgressBytes
 		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
 		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
@@ -673,6 +678,7 @@ func metricFromHash(value interface{}) model.RouteGroupMetric {
 		UpstreamErrorCount: parseInt(fields["upstream_error_count"]),
 		LatencySumMs:       parseFloat(fields["latency_sum_ms"]),
 		LatencyCount:       parseInt(fields["latency_count"]),
+		EgressBytes:        parseInt(fields["egress_bytes"]),
 		TeamID:             fields["team_id"],
 		TeamName:           fields["team_name"],
 		TeamAlias:          fields["team_alias"],

@@ -192,6 +192,7 @@ func metricFromLog(routeGroup string, mapping model.RouteMapping, log model.Apis
 		RequestCount: 1,
 		LatencySumMs: log.RequestTime * 1000,
 		LatencyCount: 1,
+		EgressBytes:  firstPositiveInt64(log.BodyBytesSent, log.BytesSent, log.ResponseSize),
 		TeamID:       mapping.TeamID,
 		TeamName:     mapping.TeamName,
 		TeamAlias:    mapping.TeamAlias,
@@ -210,6 +211,15 @@ func metricFromLog(routeGroup string, mapping model.RouteMapping, log model.Apis
 		metric.UpstreamErrorCount = 1
 	}
 	return metric
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func scopesForMapping(mapping model.RouteMapping) []model.AggregateScope {

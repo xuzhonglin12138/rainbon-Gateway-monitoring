@@ -84,12 +84,12 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 
 	err := collector.Collect(context.Background(), []model.ApisixAccessLog{
 		{
-			RouteID:        "route-a",
-			ServiceID:      "service-a",
-			URI:            "/api/order/detail/123",
-			Status:         200,
-			RequestTime:    0.086,
-			UpstreamStatus: 200,
+			RouteID:       "route-a",
+			ServiceID:     "service-a",
+			URI:           "/api/order/detail/123",
+			Status:        200,
+			RequestTime:   0.086,
+			BodyBytesSent: 1024,
 		},
 		{
 			RouteID:        "route-a",
@@ -98,6 +98,7 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 			Status:         503,
 			RequestTime:    0.114,
 			UpstreamStatus: 502,
+			BytesSent:      2048,
 		},
 	})
 	if err != nil {
@@ -125,6 +126,7 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 			platform5m.UpstreamErrorCount += write.Metric.UpstreamErrorCount
 			platform5m.LatencySumMs += write.Metric.LatencySumMs
 			platform5m.LatencyCount += write.Metric.LatencyCount
+			platform5m.EgressBytes += write.Metric.EgressBytes
 		}
 	}
 	if platform5m.RequestCount != 2 {
@@ -138,6 +140,9 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 	if platform5m.LatencySumMs != 200 {
 		t.Fatalf("platform 5m latency sum = %v; want 200", platform5m.LatencySumMs)
+	}
+	if platform5m.EgressBytes != 3072 {
+		t.Fatalf("platform 5m egress bytes = %d; want 3072", platform5m.EgressBytes)
 	}
 }
 

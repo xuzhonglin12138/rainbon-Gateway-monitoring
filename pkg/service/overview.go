@@ -59,10 +59,20 @@ func NewOverviewService(cfg OverviewConfig) *OverviewService {
 }
 
 func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error) {
+	if overview, ok, err := s.realtimeBucketOverview(ctx, model.AggregateScope{Kind: model.ScopePlatform}, window); err != nil {
+		return model.Overview{}, err
+	} else if ok {
+		return overview, nil
+	}
 	return s.gatewayOverview(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "", window)
 }
 
 func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error) {
+	if overview, ok, err := s.realtimeBucketOverview(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window); err != nil {
+		return model.Overview{}, err
+	} else if ok {
+		return overview, nil
+	}
 	routeMatcher, err := s.appRouteMatcher(ctx, appID)
 	if err != nil {
 		return model.Overview{}, err
@@ -74,6 +84,11 @@ func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, wind
 }
 
 func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error) {
+	if overview, ok, err := s.realtimeBucketOverview(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window); err != nil {
+		return model.Overview{}, err
+	} else if ok {
+		return overview, nil
+	}
 	if s.routeGroupStore != nil {
 		items, err := s.routeGroupStore.ListRouteGroups(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window, 200, "summary")
 		if err != nil {
@@ -119,25 +134,64 @@ func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID 
 	}, nil
 }
 
+func (s *OverviewService) realtimeBucketOverview(ctx context.Context, scope model.AggregateScope, window model.Window) (model.Overview, bool, error) {
+	if s.routeGroupStore == nil {
+		return model.Overview{}, false, nil
+	}
+	buckets, err := s.routeGroupStore.ListRouteGroupBucketPoints(ctx, scope, window)
+	if err != nil {
+		return model.Overview{}, false, err
+	}
+	if len(buckets) == 0 {
+		return model.Overview{}, false, nil
+	}
+	return overviewFromRouteMetrics(scope, window, routeMetricsFromBuckets(buckets)), true, nil
+}
+
 func overviewFromRouteGroups(componentID string, window model.Window, items []model.RouteGroupItem) model.Overview {
+	scope := model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}
+	metrics := make([]model.RouteGroupMetric, 0, len(items))
+	for _, item := range items {
+		metrics = append(metrics, model.RouteGroupMetric{
+			RequestCount: item.RequestCount,
+			ErrorCount:   item.ErrorCount,
+			LatencySumMs: item.AvgLatencyMs * float64(item.RequestCount),
+			LatencyCount: item.RequestCount,
+			EgressBytes:  item.EgressBytes,
+		})
+	}
+	return overviewFromRouteMetrics(scope, window, metrics)
+}
+
+func routeMetricsFromBuckets(buckets []model.RouteGroupBucketPoint) []model.RouteGroupMetric {
+	metrics := make([]model.RouteGroupMetric, 0, len(buckets))
+	for _, bucket := range buckets {
+		metrics = append(metrics, bucket.Metric)
+	}
+	return metrics
+}
+
+func overviewFromRouteMetrics(scope model.AggregateScope, window model.Window, metrics []model.RouteGroupMetric) model.Overview {
 	var requestCount float64
 	var errorCount float64
-	var latencyWeightedSum float64
+	var latencySum float64
+	var latencyCount float64
 	var egressBytes float64
-	for _, item := range items {
-		requests := float64(item.RequestCount)
+	for _, metric := range metrics {
+		requests := float64(metric.RequestCount)
 		requestCount += requests
-		errorCount += float64(item.ErrorCount)
-		latencyWeightedSum += item.AvgLatencyMs * requests
-		egressBytes += float64(item.EgressBytes)
+		errorCount += float64(metric.ErrorCount)
+		latencySum += metric.LatencySumMs
+		latencyCount += float64(metric.LatencyCount)
+		egressBytes += float64(metric.EgressBytes)
 	}
 	var errorRate float64
 	if requestCount > 0 {
 		errorRate = errorCount / requestCount
 	}
 	var avgLatency float64
-	if requestCount > 0 {
-		avgLatency = latencyWeightedSum / requestCount
+	if latencyCount > 0 {
+		avgLatency = latencySum / latencyCount
 	}
 	windowSeconds := window.Duration().Seconds()
 	if windowSeconds <= 0 {
@@ -145,7 +199,7 @@ func overviewFromRouteGroups(componentID string, window model.Window, items []mo
 	}
 	egressBytesPerSecond := egressBytes / windowSeconds
 	return model.Overview{
-		Scope:               model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
+		Scope:               scope,
 		Window:              window,
 		RequestCount:        requestCount,
 		ErrorCount:          errorCount,

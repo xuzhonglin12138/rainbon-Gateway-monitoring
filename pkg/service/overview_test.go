@@ -52,6 +52,54 @@ func TestOverviewServiceGetsPlatformOverview(t *testing.T) {
 	}
 }
 
+func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1000,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 30,
+					ErrorCount:   3,
+					LatencySumMs: 1500,
+					LatencyCount: 30,
+					EgressBytes:  3000,
+				},
+			},
+			{
+				Timestamp: 1005,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 10,
+					ErrorCount:   2,
+					LatencySumMs: 1000,
+					LatencyCount: 10,
+					EgressBytes:  6000,
+				},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
+
+	overview, err := service.GetPlatformOverview(context.Background(), model.Window5m)
+	if err != nil {
+		t.Fatalf("GetPlatformOverview() unexpected error: %v", err)
+	}
+	if store.scope.Kind != model.ScopePlatform {
+		t.Fatalf("scope = %#v; want platform", store.scope)
+	}
+	if overview.RequestCount != 40 {
+		t.Fatalf("request count = %v; want 40", overview.RequestCount)
+	}
+	if overview.ErrorRate != 0.125 {
+		t.Fatalf("error rate = %v; want 0.125", overview.ErrorRate)
+	}
+	if overview.AvgLatencyMs != 62.5 {
+		t.Fatalf("latency = %v; want 62.5", overview.AvgLatencyMs)
+	}
+	if overview.EgressBytesPerSec != 30 {
+		t.Fatalf("egress = %v; want 30", overview.EgressBytesPerSec)
+	}
+}
+
 func TestOverviewServiceGetsAppOverviewWithRouteIndex(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
 		`sum(increase(apisix_http_status{route=~"route-a"}[10m]))`:                    200,
@@ -77,6 +125,44 @@ func TestOverviewServiceGetsAppOverviewWithRouteIndex(t *testing.T) {
 	}
 	if overview.AvgLatencyMs != 20 {
 		t.Fatalf("latency = %v; want 20", overview.AvgLatencyMs)
+	}
+}
+
+func TestOverviewServiceGetsAppOverviewFromRealtimeBucketsWithoutRouteIndex(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1000,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 12,
+					ErrorCount:   1,
+					LatencySumMs: 480,
+					LatencyCount: 12,
+					EgressBytes:  2400,
+				},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
+
+	overview, err := service.GetAppOverview(context.Background(), "app-a", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetAppOverview() unexpected error: %v", err)
+	}
+	if store.scope.Kind != model.ScopeApp || store.scope.ID != "app-a" {
+		t.Fatalf("scope = %#v; want app/app-a", store.scope)
+	}
+	if overview.RequestCount != 12 {
+		t.Fatalf("request count = %v; want 12", overview.RequestCount)
+	}
+	if overview.ErrorRate != float64(1)/float64(12) {
+		t.Fatalf("error rate = %v; want %v", overview.ErrorRate, float64(1)/float64(12))
+	}
+	if overview.AvgLatencyMs != 40 {
+		t.Fatalf("latency = %v; want 40", overview.AvgLatencyMs)
+	}
+	if overview.EgressBytesPerSec != 8 {
+		t.Fatalf("egress = %v; want 8", overview.EgressBytesPerSec)
 	}
 }
 
@@ -209,6 +295,18 @@ func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 
 func TestOverviewServiceGetsComponentOverviewFromRouteGroups(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1000,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 10,
+					ErrorCount:   2,
+					LatencySumMs: 280,
+					LatencyCount: 10,
+					EgressBytes:  6000,
+				},
+			},
+		},
 		items: []model.RouteGroupItem{
 			{RouteGroup: "/api/ping", RequestCount: 8, ErrorCount: 1, AvgLatencyMs: 20, EgressBytes: 3000},
 			{RouteGroup: "/api/order", RequestCount: 2, ErrorCount: 1, AvgLatencyMs: 60, EgressBytes: 1500},
@@ -238,11 +336,11 @@ func TestOverviewServiceGetsComponentOverviewFromRouteGroups(t *testing.T) {
 	if overview.ThroughputPerSecond != float64(10)/model.Window5m.Duration().Seconds() {
 		t.Fatalf("throughput = %v; want %v", overview.ThroughputPerSecond, float64(10)/model.Window5m.Duration().Seconds())
 	}
-	if overview.EgressBytesPerSec != 15 {
-		t.Fatalf("egress = %v; want 15", overview.EgressBytesPerSec)
+	if overview.EgressBytesPerSec != 20 {
+		t.Fatalf("egress = %v; want 20", overview.EgressBytesPerSec)
 	}
-	if overview.NetworkTransmitBps != 15 {
-		t.Fatalf("network transmit = %v; want 15", overview.NetworkTransmitBps)
+	if overview.NetworkTransmitBps != 20 {
+		t.Fatalf("network transmit = %v; want 20", overview.NetworkTransmitBps)
 	}
 }
 

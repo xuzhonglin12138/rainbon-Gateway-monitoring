@@ -15,21 +15,27 @@ import (
 )
 
 type OverviewConfig struct {
-	Prometheus PrometheusQueryClient
-	Store      routeIndexStore
-	Now        func() time.Time
-	Logger     *logrus.Logger
+	Prometheus      PrometheusQueryClient
+	Store           routeIndexStore
+	RouteGroupStore routeGroupOverviewStore
+	Now             func() time.Time
+	Logger          *logrus.Logger
 }
 
 type routeIndexStore interface {
 	GetAppPrometheusRoutes(ctx context.Context, appID string) ([]string, error)
 }
 
+type routeGroupOverviewStore interface {
+	ListRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error)
+}
+
 type OverviewService struct {
-	prometheus PrometheusQueryClient
-	store      routeIndexStore
-	now        func() time.Time
-	logger     *logrus.Logger
+	prometheus      PrometheusQueryClient
+	store           routeIndexStore
+	routeGroupStore routeGroupOverviewStore
+	now             func() time.Time
+	logger          *logrus.Logger
 }
 
 type PrometheusQueryClient interface {
@@ -42,7 +48,13 @@ func NewOverviewService(cfg OverviewConfig) *OverviewService {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, now: cfg.Now, logger: cfg.Logger}
+	routeGroupStore := cfg.RouteGroupStore
+	if routeGroupStore == nil {
+		if store, ok := cfg.Store.(routeGroupOverviewStore); ok {
+			routeGroupStore = store
+		}
+	}
+	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, routeGroupStore: routeGroupStore, now: cfg.Now, logger: cfg.Logger}
 }
 
 func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error) {
@@ -61,6 +73,15 @@ func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, wind
 }
 
 func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error) {
+	if s.routeGroupStore != nil {
+		items, err := s.routeGroupStore.ListRouteGroups(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window, 200, "summary")
+		if err != nil {
+			return model.Overview{}, err
+		}
+		if len(items) > 0 {
+			return overviewFromRouteGroups(componentID, window, items), nil
+		}
+	}
 	if s.prometheus == nil {
 		return model.Overview{}, fmt.Errorf("prometheus client is required")
 	}
@@ -97,6 +118,40 @@ func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID 
 	}, nil
 }
 
+func overviewFromRouteGroups(componentID string, window model.Window, items []model.RouteGroupItem) model.Overview {
+	var requestCount float64
+	var errorCount float64
+	var latencyWeightedSum float64
+	for _, item := range items {
+		requests := float64(item.RequestCount)
+		requestCount += requests
+		errorCount += float64(item.ErrorCount)
+		latencyWeightedSum += item.AvgLatencyMs * requests
+	}
+	var errorRate float64
+	if requestCount > 0 {
+		errorRate = errorCount / requestCount
+	}
+	var avgLatency float64
+	if requestCount > 0 {
+		avgLatency = latencyWeightedSum / requestCount
+	}
+	windowSeconds := window.Duration().Seconds()
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
+	return model.Overview{
+		Scope:               model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
+		Window:              window,
+		RequestCount:        requestCount,
+		ErrorCount:          errorCount,
+		ErrorRate:           errorRate,
+		AvgLatencyMs:        avgLatency,
+		ThroughputPerSecond: requestCount / windowSeconds,
+		EvidenceLevel:       "A",
+	}
+}
+
 func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context) (model.OverviewTrend, error) {
 	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "")
 }
@@ -110,6 +165,26 @@ func (s *OverviewService) GetAppRealtimeTrend(ctx context.Context, appID string)
 }
 
 func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, componentID string) (model.OverviewTrend, error) {
+	if s.routeGroupStore != nil {
+		items, err := s.routeGroupStore.ListRouteGroups(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, model.Window5m, 200, "summary")
+		if err != nil {
+			return model.OverviewTrend{}, err
+		}
+		if len(items) > 0 {
+			overview := overviewFromRouteGroups(componentID, model.Window5m, items)
+			return model.OverviewTrend{
+				Scope:  model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
+				Window: model.Window5m,
+				Points: []model.OverviewTrendPoint{{
+					Timestamp:         s.now().Unix(),
+					RequestPerSecond:  overview.ThroughputPerSecond,
+					ErrorRate:         overview.ErrorRate,
+					AvgLatencyMs:      overview.AvgLatencyMs,
+					EgressBytesPerSec: overview.EgressBytesPerSec,
+				}},
+			}, nil
+		}
+	}
 	if s.prometheus == nil {
 		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
 	}

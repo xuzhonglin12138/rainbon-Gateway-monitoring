@@ -11,6 +11,16 @@ import (
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
 )
 
+type fakeRouteGroupOverviewStore struct {
+	items []model.RouteGroupItem
+	scope model.AggregateScope
+}
+
+func (f *fakeRouteGroupOverviewStore) ListRouteGroups(_ context.Context, scope model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
+	f.scope = scope
+	return f.items, nil
+}
+
 func TestOverviewServiceGetsPlatformOverview(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
 		`sum(increase(apisix_http_status[5m]))`:                     1000,
@@ -188,6 +198,72 @@ func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 	}
 	if overview.EgressBytesPerSec != 2048 {
 		t.Fatalf("egress = %v; want 2048", overview.EgressBytesPerSec)
+	}
+}
+
+func TestOverviewServiceGetsComponentOverviewFromRouteGroups(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		items: []model.RouteGroupItem{
+			{RouteGroup: "/api/ping", RequestCount: 8, ErrorCount: 1, AvgLatencyMs: 20},
+			{RouteGroup: "/api/order", RequestCount: 2, ErrorCount: 1, AvgLatencyMs: 60},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
+
+	overview, err := service.GetComponentOverview(context.Background(), "svc-a", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetComponentOverview() unexpected error: %v", err)
+	}
+	if store.scope.Kind != model.ScopeComponent || store.scope.ID != "svc-a" {
+		t.Fatalf("scope = %#v", store.scope)
+	}
+	if overview.RequestCount != 10 {
+		t.Fatalf("request count = %v; want 10", overview.RequestCount)
+	}
+	if overview.ErrorCount != 2 {
+		t.Fatalf("error count = %v; want 2", overview.ErrorCount)
+	}
+	if overview.ErrorRate != 0.2 {
+		t.Fatalf("error rate = %v; want 0.2", overview.ErrorRate)
+	}
+	if overview.AvgLatencyMs != 28 {
+		t.Fatalf("latency = %v; want 28", overview.AvgLatencyMs)
+	}
+	if overview.ThroughputPerSecond != float64(10)/model.Window5m.Duration().Seconds() {
+		t.Fatalf("throughput = %v; want %v", overview.ThroughputPerSecond, float64(10)/model.Window5m.Duration().Seconds())
+	}
+}
+
+func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := &fakeRouteGroupOverviewStore{
+		items: []model.RouteGroupItem{
+			{RouteGroup: "/api/ping", RequestCount: 30, ErrorCount: 3, AvgLatencyMs: 50},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now:             func() time.Time { return now },
+	})
+
+	trend, err := service.GetComponentRealtimeTrend(context.Background(), "svc-a")
+	if err != nil {
+		t.Fatalf("GetComponentRealtimeTrend() unexpected error: %v", err)
+	}
+	if len(trend.Points) != 1 {
+		t.Fatalf("points length = %d; want 1", len(trend.Points))
+	}
+	if trend.Points[0].Timestamp != now.Unix() {
+		t.Fatalf("timestamp = %v; want %v", trend.Points[0].Timestamp, now.Unix())
+	}
+	if trend.Points[0].RequestPerSecond != float64(30)/model.Window5m.Duration().Seconds() {
+		t.Fatalf("request per second = %v", trend.Points[0].RequestPerSecond)
+	}
+	if trend.Points[0].ErrorRate != 0.1 {
+		t.Fatalf("error rate = %v; want 0.1", trend.Points[0].ErrorRate)
+	}
+	if trend.Points[0].AvgLatencyMs != 50 {
+		t.Fatalf("latency = %v; want 50", trend.Points[0].AvgLatencyMs)
 	}
 }
 

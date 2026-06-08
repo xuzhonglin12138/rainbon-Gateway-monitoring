@@ -453,10 +453,11 @@ func TestServerHandlesPlatformAppTopThroughput(t *testing.T) {
 				AvgLatencyMs:        45,
 				ThroughputPerSecond: 2,
 			}},
+			meta: model.QueryMeta{Window: model.Window30m, FreshnessSeconds: 9},
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/apps/top-throughput?window=5m", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/apps/top-throughput?window=30m", nil)
 	resp := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
@@ -464,6 +465,9 @@ func TestServerHandlesPlatformAppTopThroughput(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body.String(), `"app_id":"app-a"`) || !strings.Contains(resp.Body.String(), `"throughput_per_second":2`) {
 		t.Fatalf("response body = %s; want app throughput ranking", resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"window":"30m"`) || !strings.Contains(resp.Body.String(), `"freshness_seconds":9`) {
+		t.Fatalf("response body = %s; want selected window meta", resp.Body.String())
 	}
 }
 

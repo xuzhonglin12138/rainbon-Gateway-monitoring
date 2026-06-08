@@ -328,6 +328,7 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 }
 
 func applyRouteMappingMetadata(mapping model.RouteMapping, metadata model.RouteMappingMetadata) model.RouteMapping {
+	mapping.AppID = firstNonEmptyString(metadata.AppID, mapping.AppID)
 	mapping.RegionName = firstNonEmptyString(metadata.RegionName, mapping.RegionName)
 	mapping.RegionAppID = firstNonEmptyString(metadata.RegionAppID, mapping.RegionAppID)
 	mapping.TeamName = firstNonEmptyString(metadata.TeamName, mapping.TeamName)

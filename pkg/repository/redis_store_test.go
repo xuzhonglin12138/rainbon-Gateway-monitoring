@@ -11,6 +11,7 @@ import (
 type fakeRedisClient struct {
 	calls     [][]string
 	keys      []interface{}
+	keysByPattern map[string][]interface{}
 	hash      []interface{}
 	hashByKey map[string][]interface{}
 	get       interface{}
@@ -22,6 +23,11 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 	f.calls = append(f.calls, args)
 	switch args[0] {
 	case "KEYS":
+		if f.keysByPattern != nil {
+			if value, ok := f.keysByPattern[args[1]]; ok {
+				return value, nil
+			}
+		}
 		return f.keys, nil
 	case "HGETALL":
 		if f.hashByKey != nil {
@@ -341,6 +347,96 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 	}
 }
 
+func TestRedisStoreListAppsCanonicalizesRegionAppID(t *testing.T) {
+	client := &fakeRedisClient{
+		keys: []interface{}{
+			"nm:platform:5m:route-group:_api_pay:bucket:1710000005",
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:platform:5m:route-group:_api_pay:bucket:1710000005": {
+				"route_group", "/api/pay/*",
+				"request_count", "7",
+				"latency_count", "7",
+				"latency_sum_ms", "140",
+				"app_id", "region-app-a",
+				"region_app_id", "region-app-a",
+				"team_id", "team-ns",
+			},
+		},
+		sets: map[string]interface{}{
+			appCanonicalKey("region-app-a"): "1023",
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].AppID != "1023" || items[0].RegionAppID != "region-app-a" {
+		t.Fatalf("app ids = %#v; want console app id with region app id retained", items[0])
+	}
+}
+
+func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		keysByPattern: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:1023:5m:route-group:_api_pay:bucket:1710000005",
+			},
+			"nm:app:region-app-a:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005": {
+				"route_group", "/api/pay/*",
+				"request_count", "5",
+				"error_count", "2",
+				"latency_count", "5",
+				"latency_sum_ms", "250",
+				"app_id", "region-app-a",
+				"region_app_id", "region-app-a",
+			},
+			"nm:app:1023:5m:route-group:_api_pay:bucket:1710000005": {
+				"route_group", "/api/pay/*",
+				"request_count", "3",
+				"latency_count", "3",
+				"latency_sum_ms", "60",
+				"app_id", "1023",
+				"region_app_id", "region-app-a",
+			},
+		},
+		sets: map[string]interface{}{
+			appAliasesKey("1023"): []interface{}{"region-app-a"},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListRouteGroups(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "1023"}, model.Window5m, 50, "requests")
+	if err != nil {
+		t.Fatalf("ListRouteGroups() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].RequestCount != 8 || items[0].ErrorCount != 2 {
+		t.Fatalf("item = %#v; want merged console and region app buckets", items[0])
+	}
+	if items[0].AvgLatencyMs != 38.75 {
+		t.Fatalf("avg latency = %v; want 38.75", items[0].AvgLatencyMs)
+	}
+}
+
 func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 	client := &fakeRedisClient{
 		keys: []interface{}{
@@ -500,6 +596,35 @@ func TestRedisStoreIndexesPrometheusRoutesByApp(t *testing.T) {
 	}
 	if len(routes) != 1 || routes[0] != "prom-route-a" {
 		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestRedisStoreIndexesRegionAppAliasByConsoleApp(t *testing.T) {
+	client := &fakeRedisClient{}
+	store := NewRedisStore(client)
+
+	err := store.SaveRouteMapping(context.Background(), model.RouteMapping{
+		RouteID:         "route-a",
+		AppID:           "1023",
+		RegionAppID:     "region-app-a",
+		PrometheusRoute: "prom-route-a",
+	}, 0)
+	if err != nil {
+		t.Fatalf("SaveRouteMapping() unexpected error: %v", err)
+	}
+	aliases, err := store.appScopes(context.Background(), "1023")
+	if err != nil {
+		t.Fatalf("appScopes() unexpected error: %v", err)
+	}
+	if len(aliases) != 2 || aliases[0].ID != "1023" || aliases[1].ID != "region-app-a" {
+		t.Fatalf("app scopes = %#v; want console and region app ids", aliases)
+	}
+	canonical, err := store.appScopes(context.Background(), "region-app-a")
+	if err != nil {
+		t.Fatalf("appScopes(region) unexpected error: %v", err)
+	}
+	if len(canonical) < 2 || canonical[0].ID != "region-app-a" || canonical[1].ID != "1023" {
+		t.Fatalf("canonical app scopes = %#v; want region and console app ids", canonical)
 	}
 }
 

@@ -607,6 +607,7 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 	metadata := model.RouteMappingMetadata{
 		RegionName:  payload.RegionName,
 		RegionAppID: syncAppID,
+		AppID:       appID,
 		TeamName:    payload.TeamName,
 		TeamAlias:   payload.TeamAlias,
 		AppName:     payload.AppName,
@@ -1034,17 +1035,27 @@ func (s *Server) handleTopApps(w http.ResponseWriter, r *http.Request, scope mod
 	if items == nil {
 		items = []model.AppTrafficItem{}
 	}
+	meta := model.QueryMeta{Window: window}
+	if metaStore, ok := s.queryStore.(RouteGroupSnapshotMetaStore); ok {
+		if snapshotMeta, err := metaStore.GetRouteGroupSnapshotMeta(r.Context(), scope, window, "requests"); err == nil {
+			meta = snapshotMeta
+			meta.Window = window
+		}
+	}
 	s.logger.WithFields(logrus.Fields{
-		"scope_kind": scope.Kind,
-		"scope_id":   scope.ID,
-		"window":     window,
-		"limit":      limit,
-		"sort_by":    sortBy,
-		"item_count": len(items),
+		"scope_kind":        scope.Kind,
+		"scope_id":          scope.ID,
+		"window":            window,
+		"limit":             limit,
+		"sort_by":           sortBy,
+		"item_count":        len(items),
+		"partial":           meta.Partial,
+		"stale":             meta.Stale,
+		"freshness_seconds": meta.FreshnessSeconds,
 	}).Info("listed app traffic top")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":     items,
-		"meta":     model.QueryMeta{Window: window},
+		"meta":     meta,
 		"warnings": []string{},
 	})
 }

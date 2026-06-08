@@ -187,6 +187,7 @@ type RouteMapping struct {
 type RouteMappingMetadata struct {
 	RegionName  string `json:"region_name,omitempty"`
 	RegionAppID string `json:"region_app_id,omitempty"`
+	AppID       string `json:"app_id,omitempty"`
 	TeamName    string `json:"team_name,omitempty"`
 	TeamAlias   string `json:"team_alias,omitempty"`
 	AppName     string `json:"app_name,omitempty"`

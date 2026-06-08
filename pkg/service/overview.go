@@ -235,24 +235,39 @@ func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint, wind
 		current.EgressBytes += bucket.Metric.EgressBytes
 		metricsByTimestamp[bucket.Timestamp] = current
 	}
-	latestBucket := model.AlignBucket(now)
+	latestBucket := closedTrendBucket(now)
 	startBucket := latestBucket - int64(bucketCount-1)*int64(model.BucketSize/time.Second)
 	for index := 0; index < bucketCount; index++ {
 		timestamp := startBucket + int64(index)*int64(model.BucketSize/time.Second)
 		metric := metricsByTimestamp[timestamp]
-		var errorRate float64
-		if metric.RequestCount > 0 {
-			errorRate = float64(metric.ErrorCount) / float64(metric.RequestCount)
+		points = append(points, trendPointFromMetric(timestamp, metric, bucketSeconds, false))
+	}
+	openBucket := model.AlignBucket(now)
+	if openBucket > latestBucket {
+		if metric, ok := metricsByTimestamp[openBucket]; ok {
+			points = append(points, trendPointFromMetric(openBucket, metric, bucketSeconds, true))
 		}
-		points = append(points, model.OverviewTrendPoint{
-			Timestamp:         timestamp,
-			RequestPerSecond:  float64(metric.RequestCount) / bucketSeconds,
-			ErrorRate:         errorRate,
-			AvgLatencyMs:      metric.AvgLatencyMs(),
-			EgressBytesPerSec: float64(metric.EgressBytes) / bucketSeconds,
-		})
 	}
 	return points
+}
+
+func closedTrendBucket(now time.Time) int64 {
+	return model.AlignBucket(now.Add(-model.BucketSize))
+}
+
+func trendPointFromMetric(timestamp int64, metric model.RouteGroupMetric, bucketSeconds float64, partial bool) model.OverviewTrendPoint {
+	var errorRate float64
+	if metric.RequestCount > 0 {
+		errorRate = float64(metric.ErrorCount) / float64(metric.RequestCount)
+	}
+	return model.OverviewTrendPoint{
+		Timestamp:         timestamp,
+		RequestPerSecond:  float64(metric.RequestCount) / bucketSeconds,
+		ErrorRate:         errorRate,
+		AvgLatencyMs:      metric.AvgLatencyMs(),
+		EgressBytesPerSec: float64(metric.EgressBytes) / bucketSeconds,
+		Partial:           partial,
+	}
 }
 
 func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context, window model.Window) (model.OverviewTrend, error) {

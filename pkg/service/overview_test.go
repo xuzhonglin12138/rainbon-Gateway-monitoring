@@ -409,7 +409,7 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	service := NewOverviewService(OverviewConfig{
 		RouteGroupStore: store,
 		Now: func() time.Time {
-			return time.Unix(1005, 0)
+			return time.Unix(1010, 0)
 		},
 	})
 
@@ -445,6 +445,50 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	}
 }
 
+func TestOverviewServiceMarksOpenRouteGroupTrendBucketAsPartial(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1005,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 10,
+				},
+			},
+			{
+				Timestamp: 1010,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 99,
+				},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now: func() time.Time {
+			return time.Unix(1011, 0)
+		},
+	})
+
+	trend, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window5m)
+	if err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	closed := trend.Points[len(trend.Points)-2]
+	partial := trend.Points[len(trend.Points)-1]
+	if closed.Timestamp != 1005 || closed.Partial {
+		t.Fatalf("closed point = %#v; want timestamp 1005 and partial=false", closed)
+	}
+	if closed.RequestPerSecond != float64(10)/model.BucketSize.Seconds() {
+		t.Fatalf("closed request per second = %v; want closed bucket value", closed.RequestPerSecond)
+	}
+	if partial.Timestamp != 1010 || !partial.Partial {
+		t.Fatalf("partial point = %#v; want timestamp 1010 and partial=true", partial)
+	}
+	if partial.RequestPerSecond != float64(99)/model.BucketSize.Seconds() {
+		t.Fatalf("partial request per second = %v; want open bucket value", partial.RequestPerSecond)
+	}
+}
+
 func TestOverviewServicePadsRouteGroupTrendToRequestedWindow(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
 		buckets: []model.RouteGroupBucketPoint{
@@ -459,7 +503,7 @@ func TestOverviewServicePadsRouteGroupTrendToRequestedWindow(t *testing.T) {
 	service := NewOverviewService(OverviewConfig{
 		RouteGroupStore: store,
 		Now: func() time.Time {
-			return time.Unix(1005, 0)
+			return time.Unix(1010, 0)
 		},
 	})
 

@@ -26,4 +26,5 @@ type OverviewTrendPoint struct {
 	ErrorRate         float64 `json:"error_rate"`
 	AvgLatencyMs      float64 `json:"avg_latency_ms"`
 	EgressBytesPerSec float64 `json:"egress_bytes_per_sec"`
+	Partial           bool    `json:"partial,omitempty"`
 }

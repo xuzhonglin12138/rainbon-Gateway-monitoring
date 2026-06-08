@@ -105,7 +105,7 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 		t.Fatalf("Collect() unexpected error: %v", err)
 	}
 
-	wantWrites := 4 * 3 * 2
+	wantWrites := 4 * 3
 	if len(store.writes) != wantWrites {
 		t.Fatalf("writes = %d; want %d", len(store.writes), wantWrites)
 	}
@@ -143,6 +143,56 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 	if platform5m.EgressBytes != 3072 {
 		t.Fatalf("platform 5m egress bytes = %d; want 3072", platform5m.EgressBytes)
+	}
+}
+
+func TestCollectorKeepsDistinctBucketsSeparateWhenBatchAggregating(t *testing.T) {
+	store := &fakeAggregateStore{}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapper{mapping: model.RouteMapping{
+			TeamID:      "team-a",
+			AppID:       "app-a",
+			ComponentID: "svc-a",
+		}},
+		Now: func() time.Time {
+			return time.Unix(1710000010, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{
+		{
+			Timestamp:   "2024-03-09T16:00:07Z",
+			RouteID:     "route-a",
+			URI:         "/api/ping",
+			Status:      200,
+			RequestTime: 0.01,
+		},
+		{
+			Timestamp:   "2024-03-09T16:00:11Z",
+			RouteID:     "route-a",
+			URI:         "/api/ping",
+			Status:      200,
+			RequestTime: 0.01,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+
+	wantWrites := 4 * 3 * 2
+	if len(store.writes) != wantWrites {
+		t.Fatalf("writes = %d; want %d", len(store.writes), wantWrites)
+	}
+	seenBuckets := map[int64]bool{}
+	for _, write := range store.writes {
+		seenBuckets[write.BucketUnix] = true
+		if write.Metric.RequestCount != 1 {
+			t.Fatalf("request count = %d; want 1 for distinct bucket write", write.Metric.RequestCount)
+		}
+	}
+	if !seenBuckets[1710000005] || !seenBuckets[1710000010] {
+		t.Fatalf("seen buckets = %#v; want 1710000005 and 1710000010", seenBuckets)
 	}
 }
 

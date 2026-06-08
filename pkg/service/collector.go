@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,13 @@ type InternalRouteCollector struct {
 	logger          *logrus.Logger
 }
 
+type collectorAggregateKey struct {
+	Scope      model.AggregateScope
+	Window     model.Window
+	BucketUnix int64
+	RouteGroup string
+}
+
 func NewInternalRouteCollector(cfg CollectorConfig) *InternalRouteCollector {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -74,6 +82,7 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		}).Info("collecting apisix access logs")
 	}
 	var skippedMissingRoute, resolvedCount, unknownMappingCount int
+	aggregates := make(map[collectorAggregateKey]model.RouteGroupMetric)
 	for _, log := range logs {
 		if log.RouteID == "" && log.RouteName == "" && log.ServiceID == "" {
 			skippedMissingRoute++
@@ -125,21 +134,104 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		}
 		for _, window := range model.HotWindows() {
 			for _, scope := range scopesForMapping(mapping) {
-				if err := c.store.AddRouteGroupBucket(ctx, scope, window, bucket, metric); err != nil {
-					return fmt.Errorf("write route group bucket: %w", err)
-				}
+				addCollectorAggregate(aggregates, scope, window, bucket, metric)
 			}
+		}
+	}
+	for _, key := range sortedCollectorAggregateKeys(aggregates) {
+		if err := c.store.AddRouteGroupBucket(ctx, key.Scope, key.Window, key.BucketUnix, aggregates[key]); err != nil {
+			return fmt.Errorf("write route group bucket: %w", err)
 		}
 	}
 	if c.logger != nil {
 		c.logger.WithFields(logrus.Fields{
 			"log_count":             len(logs),
+			"aggregate_count":       len(aggregates),
 			"skipped_missing_route": skippedMissingRoute,
 			"mapped_count":          resolvedCount,
 			"unknown_mapping_count": unknownMappingCount,
 		}).Info("collected apisix access logs")
 	}
 	return nil
+}
+
+func addCollectorAggregate(aggregates map[collectorAggregateKey]model.RouteGroupMetric, scope model.AggregateScope, window model.Window, bucketUnix int64, metric model.RouteGroupMetric) {
+	key := collectorAggregateKey{
+		Scope:      scope,
+		Window:     window,
+		BucketUnix: bucketUnix,
+		RouteGroup: metric.RouteGroup,
+	}
+	current := aggregates[key]
+	copyRouteGroupMetricIdentity(&current, metric)
+	current.RequestCount += metric.RequestCount
+	current.ErrorCount += metric.ErrorCount
+	current.UpstreamErrorCount += metric.UpstreamErrorCount
+	current.LatencySumMs += metric.LatencySumMs
+	current.LatencyCount += metric.LatencyCount
+	current.EgressBytes += metric.EgressBytes
+	aggregates[key] = current
+}
+
+func copyRouteGroupMetricIdentity(target *model.RouteGroupMetric, source model.RouteGroupMetric) {
+	if target.RouteGroup == "" {
+		target.RouteGroup = source.RouteGroup
+	}
+	if target.AppID == "" {
+		target.AppID = source.AppID
+	}
+	if target.TeamID == "" {
+		target.TeamID = source.TeamID
+	}
+	if target.TeamName == "" {
+		target.TeamName = source.TeamName
+	}
+	if target.TeamAlias == "" {
+		target.TeamAlias = source.TeamAlias
+	}
+	if target.Namespace == "" {
+		target.Namespace = source.Namespace
+	}
+	if target.RegionAppID == "" {
+		target.RegionAppID = source.RegionAppID
+	}
+	if target.AppName == "" {
+		target.AppName = source.AppName
+	}
+	if target.RegionName == "" {
+		target.RegionName = source.RegionName
+	}
+	if target.ComponentID == "" {
+		target.ComponentID = source.ComponentID
+	}
+	if target.ServiceAlias == "" {
+		target.ServiceAlias = source.ServiceAlias
+	}
+}
+
+func sortedCollectorAggregateKeys(aggregates map[collectorAggregateKey]model.RouteGroupMetric) []collectorAggregateKey {
+	keys := make([]collectorAggregateKey, 0, len(aggregates))
+	for key := range aggregates {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left := keys[i]
+		right := keys[j]
+		if left.Scope.Kind != right.Scope.Kind {
+			return left.Scope.Kind < right.Scope.Kind
+		}
+		if left.Scope.ID != right.Scope.ID {
+			return left.Scope.ID < right.Scope.ID
+		}
+		if left.Window != right.Window {
+			return left.Window < right.Window
+		}
+		if left.BucketUnix != right.BucketUnix {
+			return left.BucketUnix < right.BucketUnix
+		}
+		return left.RouteGroup < right.RouteGroup
+	})
+	return keys
 }
 
 func bucketFromAccessLog(log model.ApisixAccessLog, fallbackBucket int64) int64 {

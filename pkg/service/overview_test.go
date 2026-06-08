@@ -172,7 +172,7 @@ func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
 	}
 }
 
-func TestOverviewServiceFallsBackToLatestBucketForRealtimeOverview(t *testing.T) {
+func TestOverviewServiceDoesNotUseStaleBucketForRealtimeOverview(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
 		buckets: []model.RouteGroupBucketPoint{
 			{
@@ -198,17 +198,17 @@ func TestOverviewServiceFallsBackToLatestBucketForRealtimeOverview(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetComponentOverview() unexpected error: %v", err)
 	}
-	if overview.RealtimeRequestPerSecond != 5 {
-		t.Fatalf("realtime request per second = %v; want 5", overview.RealtimeRequestPerSecond)
+	if overview.RealtimeRequestPerSecond != 0 {
+		t.Fatalf("realtime request per second = %v; want 0", overview.RealtimeRequestPerSecond)
 	}
-	if overview.RealtimeErrorRate != 0.2 {
-		t.Fatalf("realtime error rate = %v; want 0.2", overview.RealtimeErrorRate)
+	if overview.RealtimeErrorRate != 0 {
+		t.Fatalf("realtime error rate = %v; want 0", overview.RealtimeErrorRate)
 	}
-	if overview.RealtimeAvgLatencyMs != 50 {
-		t.Fatalf("realtime latency = %v; want 50", overview.RealtimeAvgLatencyMs)
+	if overview.RealtimeAvgLatencyMs != 0 {
+		t.Fatalf("realtime latency = %v; want 0", overview.RealtimeAvgLatencyMs)
 	}
-	if overview.RealtimeEgressBytesPerSec != 500 {
-		t.Fatalf("realtime egress = %v; want 500", overview.RealtimeEgressBytesPerSec)
+	if overview.RealtimeEgressBytesPerSec != 0 {
+		t.Fatalf("realtime egress = %v; want 0", overview.RealtimeEgressBytesPerSec)
 	}
 }
 

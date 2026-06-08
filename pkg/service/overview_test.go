@@ -353,8 +353,8 @@ func TestOverviewServiceAlignsGatewayTrendRangeQueries(t *testing.T) {
 		t.Fatalf("range query count = %d; want 4", len(client.rangesQueries))
 	}
 	for _, call := range client.rangesQueries {
-		if call.Start != 90 || call.End != 390 || call.StepSeconds != 30 {
-			t.Fatalf("range query = %#v; want start=90 end=390 step=30", call)
+		if call.Start != 100 || call.End != 400 || call.StepSeconds != 5 {
+			t.Fatalf("range query = %#v; want start=100 end=400 step=5", call)
 		}
 	}
 
@@ -366,8 +366,8 @@ func TestOverviewServiceAlignsGatewayTrendRangeQueries(t *testing.T) {
 		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
 	}
 	for _, call := range client.rangesQueries {
-		if call.Start != 90 || call.End != 390 || call.StepSeconds != 30 {
-			t.Fatalf("range query after refresh = %#v; want start=90 end=390 step=30", call)
+		if call.Start != 115 || call.End != 415 || call.StepSeconds != 5 {
+			t.Fatalf("range query after refresh = %#v; want start=115 end=415 step=5", call)
 		}
 	}
 }

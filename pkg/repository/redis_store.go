@@ -333,7 +333,7 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 			return nil, nil, err
 		}
 		metric := metricFromHash(values)
-		if metric.AppID == "" {
+		if metric.AppID == "" || metric.AppID == "unknown_app" {
 			continue
 		}
 		current := metrics[metric.AppID]

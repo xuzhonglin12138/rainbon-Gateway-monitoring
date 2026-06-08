@@ -37,7 +37,9 @@ func (c HTTPLoggerConfig) plugin() map[string]interface{} {
 func DefaultHTTPLoggerLogFormat() map[string]string {
 	return map[string]string{
 		"timestamp":              "$time_iso8601",
+		"route_id":               "$route_name",
 		"route_name":             "$route_name",
+		"apisix_route_id":        "$route_id",
 		"host":                   "$host",
 		"method":                 "$request_method",
 		"uri":                    "$uri",

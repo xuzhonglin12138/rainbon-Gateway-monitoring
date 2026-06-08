@@ -39,7 +39,7 @@ type OverviewService struct {
 	logger          *logrus.Logger
 }
 
-const trendRangeStepSeconds = 30
+const trendRangeStepSeconds = 5
 
 type PrometheusQueryClient interface {
 	QueryScalar(ctx context.Context, query string) (float64, error)

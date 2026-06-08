@@ -255,6 +255,7 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 		keys: []interface{}{
 			"nm:platform:5m:route-group:_api_orders:bucket:1710000005",
 			"nm:platform:5m:route-group:_api_pay:bucket:1710000005",
+			"nm:platform:5m:route-group:_api_unmapped:bucket:1710000005",
 		},
 		hashByKey: map[string][]interface{}{
 			"nm:platform:5m:route-group:_api_orders:bucket:1710000005": {
@@ -286,6 +287,16 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 				"team_alias", "研发团队",
 				"region_name", "cn-east",
 				"component_id", "svc-a",
+			},
+			"nm:platform:5m:route-group:_api_unmapped:bucket:1710000005": {
+				"route_group", "/api/unmapped/*",
+				"request_count", "100",
+				"error_count", "50",
+				"latency_count", "100",
+				"latency_sum_ms", "10000",
+				"team_id", "unknown_team",
+				"app_id", "unknown_app",
+				"component_id", "unknown_component",
 			},
 		},
 	}

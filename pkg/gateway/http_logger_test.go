@@ -128,8 +128,14 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 	plugins := httpRoutes[0].(map[string]interface{})["plugins"].([]interface{})
 	config := plugins[0].(map[string]interface{})["config"].(map[string]interface{})
 	logFormat := config["log_format"].(map[string]interface{})
+	if logFormat["route_id"] != "$route_name" {
+		t.Fatalf("route_id log format = %q; want $route_name", logFormat["route_id"])
+	}
 	if logFormat["route_name"] != "$route_name" {
 		t.Fatalf("route_name log format = %q; want $route_name", logFormat["route_name"])
+	}
+	if logFormat["apisix_route_id"] != "$route_id" {
+		t.Fatalf("apisix_route_id log format = %q; want $route_id", logFormat["apisix_route_id"])
 	}
 	if logFormat["body_bytes_sent"] != "$body_bytes_sent" {
 		t.Fatalf("body_bytes_sent log format = %q; want $body_bytes_sent", logFormat["body_bytes_sent"])

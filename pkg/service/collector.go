@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
@@ -64,11 +66,11 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		return fmt.Errorf("collector route mapper is required")
 	}
 
-	bucket := model.AlignBucket(c.now())
+	fallbackBucket := model.AlignBucket(c.now())
 	if c.logger != nil {
 		c.logger.WithFields(logrus.Fields{
 			"log_count":   len(logs),
-			"bucket_unix": bucket,
+			"bucket_unix": fallbackBucket,
 		}).Info("collecting apisix access logs")
 	}
 	var skippedMissingRoute, resolvedCount, unknownMappingCount int
@@ -105,6 +107,7 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		}
 		routeGroup := c.resolveRouteGroup(ctx, mapping, log)
 		metric := metricFromLog(routeGroup, mapping, log)
+		bucket := bucketFromAccessLog(log, fallbackBucket)
 		if c.logger != nil {
 			c.logger.WithFields(logrus.Fields{
 				"route_id":        log.RouteID,
@@ -137,6 +140,35 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 		}).Info("collected apisix access logs")
 	}
 	return nil
+}
+
+func bucketFromAccessLog(log model.ApisixAccessLog, fallbackBucket int64) int64 {
+	timestamp, ok := parseAccessLogTimestamp(log.Timestamp)
+	if !ok {
+		return fallbackBucket
+	}
+	return model.AlignBucket(timestamp)
+}
+
+func parseAccessLogTimestamp(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, true
+		}
+	}
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+		if seconds > 1e10 {
+			return time.UnixMilli(int64(seconds)), true
+		}
+		wholeSeconds := int64(seconds)
+		nanoseconds := int64((seconds - float64(wholeSeconds)) * 1e9)
+		return time.Unix(wholeSeconds, nanoseconds), true
+	}
+	return time.Time{}, false
 }
 
 func (c *InternalRouteCollector) resolveMapping(ctx context.Context, log model.ApisixAccessLog) (model.RouteMapping, error) {

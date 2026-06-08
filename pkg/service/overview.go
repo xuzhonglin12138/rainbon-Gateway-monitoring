@@ -39,6 +39,8 @@ type OverviewService struct {
 	logger          *logrus.Logger
 }
 
+const trendRangeStepSeconds = 30
+
 type PrometheusQueryClient interface {
 	QueryScalar(ctx context.Context, query string) (float64, error)
 	QueryInstant(ctx context.Context, query string) ([]promclient.Sample, error)
@@ -212,20 +214,38 @@ func overviewFromRouteMetrics(scope model.AggregateScope, window model.Window, m
 	}
 }
 
-func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint) []model.OverviewTrendPoint {
-	points := make([]model.OverviewTrendPoint, 0, len(buckets))
+func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint, window model.Window, now time.Time) []model.OverviewTrendPoint {
+	bucketCount := window.BucketCount()
+	if bucketCount <= 0 {
+		bucketCount = model.Window5m.BucketCount()
+	}
+	points := make([]model.OverviewTrendPoint, 0, bucketCount)
 	bucketSeconds := model.BucketSize.Seconds()
 	if bucketSeconds <= 0 {
 		bucketSeconds = 1
 	}
+	metricsByTimestamp := make(map[int64]model.RouteGroupMetric, len(buckets))
 	for _, bucket := range buckets {
-		metric := bucket.Metric
+		current := metricsByTimestamp[bucket.Timestamp]
+		current.RequestCount += bucket.Metric.RequestCount
+		current.ErrorCount += bucket.Metric.ErrorCount
+		current.UpstreamErrorCount += bucket.Metric.UpstreamErrorCount
+		current.LatencySumMs += bucket.Metric.LatencySumMs
+		current.LatencyCount += bucket.Metric.LatencyCount
+		current.EgressBytes += bucket.Metric.EgressBytes
+		metricsByTimestamp[bucket.Timestamp] = current
+	}
+	latestBucket := model.AlignBucket(now)
+	startBucket := latestBucket - int64(bucketCount-1)*int64(model.BucketSize/time.Second)
+	for index := 0; index < bucketCount; index++ {
+		timestamp := startBucket + int64(index)*int64(model.BucketSize/time.Second)
+		metric := metricsByTimestamp[timestamp]
 		var errorRate float64
 		if metric.RequestCount > 0 {
 			errorRate = float64(metric.ErrorCount) / float64(metric.RequestCount)
 		}
 		points = append(points, model.OverviewTrendPoint{
-			Timestamp:         bucket.Timestamp,
+			Timestamp:         timestamp,
 			RequestPerSecond:  float64(metric.RequestCount) / bucketSeconds,
 			ErrorRate:         errorRate,
 			AvgLatencyMs:      metric.AvgLatencyMs(),
@@ -266,21 +286,20 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 	if s.prometheus == nil {
 		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
 	}
-	end := s.now().Unix()
-	start := end - int64(window.Duration()/time.Second)
-	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(app_request{service_id="%s",method="total"}[1m]))`, componentID), start, end, 30)
+	start, end := alignedTrendRange(window, s.now(), trendRangeStepSeconds)
+	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(app_request{service_id="%s",method="total"}[1m]))`, componentID), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	latencies, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`avg(app_requesttime{service_id="%s",mode="avg"})`, componentID), start, end, 30)
+	latencies, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`avg(app_requesttime{service_id="%s",mode="avg"})`, componentID), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	receive, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(container_network_receive_bytes_total{service_id="%s"}[1m]))`, componentID), start, end, 30)
+	receive, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(container_network_receive_bytes_total{service_id="%s"}[1m]))`, componentID), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	transmit, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(container_network_transmit_bytes_total{service_id="%s"}[1m]))`, componentID), start, end, 30)
+	transmit, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(container_network_transmit_bytes_total{service_id="%s"}[1m]))`, componentID), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
@@ -320,7 +339,7 @@ func (s *OverviewService) realtimeBucketTrend(ctx context.Context, scope model.A
 	return model.OverviewTrend{
 		Scope:  scope,
 		Window: window,
-		Points: componentTrendPointsFromBuckets(buckets),
+		Points: componentTrendPointsFromBuckets(buckets, window, s.now()),
 	}, true, nil
 }
 
@@ -493,27 +512,26 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 	if s.prometheus == nil {
 		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
 	}
-	end := s.now().Unix()
-	start := end - int64(window.Duration()/time.Second)
+	start, end := alignedTrendRange(window, s.now(), trendRangeStepSeconds)
 	routeLabel := prometheusRouteLabel(routeMatcher)
 	selector := metricSelector(routeLabel)
 	selectorWithCode := metricSelector(routeLabel, `code=~"5.."`)
 	latencySelector := metricSelector(routeLabel, `type="upstream"`)
 	egressSelector := metricSelector(routeLabel, `type="egress"`)
 
-	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_status%s[1m]))`, selector), start, end, 30)
+	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_status%s[1m]))`, selector), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	errors, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_status%s[1m]))`, selectorWithCode), start, end, 30)
+	errors, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_status%s[1m]))`, selectorWithCode), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	latencies, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[1m])) / sum(rate(apisix_http_latency_count%s[1m]))`, latencySelector, latencySelector), start, end, 30)
+	latencies, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_http_latency_sum%s[1m])) / sum(rate(apisix_http_latency_count%s[1m]))`, latencySelector, latencySelector), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	egress, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_bandwidth%s[1m]))`, egressSelector), start, end, 30)
+	egress, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(apisix_bandwidth%s[1m]))`, egressSelector), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
@@ -538,6 +556,16 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 		})
 	}
 	return model.OverviewTrend{Scope: scope, Window: window, Points: points}, nil
+}
+
+func alignedTrendRange(window model.Window, now time.Time, stepSeconds int64) (int64, int64) {
+	if stepSeconds <= 0 {
+		stepSeconds = trendRangeStepSeconds
+	}
+	end := now.Unix()
+	end -= end % stepSeconds
+	start := end - int64(window.Duration()/time.Second)
+	return start, end
 }
 
 func (s *OverviewService) appRouteMatcher(ctx context.Context, appID string) (string, error) {

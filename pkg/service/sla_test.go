@@ -10,10 +10,18 @@ import (
 )
 
 type fakePrometheusClient struct {
-	values  map[string]float64
-	vectors map[string][]promclient.Sample
-	ranges  map[string][]promclient.RangeSample
-	queries []string
+	values        map[string]float64
+	vectors       map[string][]promclient.Sample
+	ranges        map[string][]promclient.RangeSample
+	queries       []string
+	rangesQueries []rangeQueryCall
+}
+
+type rangeQueryCall struct {
+	Query       string
+	Start       int64
+	End         int64
+	StepSeconds int
 }
 
 func (f *fakePrometheusClient) QueryScalar(ctx context.Context, query string) (float64, error) {
@@ -28,6 +36,12 @@ func (f *fakePrometheusClient) QueryInstant(ctx context.Context, query string) (
 
 func (f *fakePrometheusClient) QueryRange(ctx context.Context, query string, start, end int64, stepSeconds int) ([]promclient.RangeSample, error) {
 	f.queries = append(f.queries, query)
+	f.rangesQueries = append(f.rangesQueries, rangeQueryCall{
+		Query:       query,
+		Start:       start,
+		End:         end,
+		StepSeconds: stepSeconds,
+	})
 	return f.ranges[query], nil
 }
 

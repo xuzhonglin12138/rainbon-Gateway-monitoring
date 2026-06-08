@@ -15,6 +15,7 @@ type fakeRouteGroupOverviewStore struct {
 	items   []model.RouteGroupItem
 	buckets []model.RouteGroupBucketPoint
 	scope   model.AggregateScope
+	window  model.Window
 }
 
 func (f *fakeRouteGroupOverviewStore) ListRouteGroups(_ context.Context, scope model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
@@ -22,8 +23,9 @@ func (f *fakeRouteGroupOverviewStore) ListRouteGroups(_ context.Context, scope m
 	return f.items, nil
 }
 
-func (f *fakeRouteGroupOverviewStore) ListRouteGroupBucketPoints(_ context.Context, scope model.AggregateScope, _ model.Window) ([]model.RouteGroupBucketPoint, error) {
+func (f *fakeRouteGroupOverviewStore) ListRouteGroupBucketPoints(_ context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
 	f.scope = scope
+	f.window = window
 	return f.buckets, nil
 }
 
@@ -265,6 +267,41 @@ func TestOverviewServiceSanitizesNonFiniteRealtimeTrendValues(t *testing.T) {
 	}
 }
 
+func TestOverviewServiceAlignsGatewayTrendRangeQueries(t *testing.T) {
+	client := &fakePrometheusClient{ranges: map[string][]promclient.RangeSample{}}
+	service := NewOverviewService(OverviewConfig{
+		Prometheus: client,
+		Now: func() time.Time {
+			return time.Unix(401, 0)
+		},
+	})
+
+	if _, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window5m); err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	if len(client.rangesQueries) != 4 {
+		t.Fatalf("range query count = %d; want 4", len(client.rangesQueries))
+	}
+	for _, call := range client.rangesQueries {
+		if call.Start != 90 || call.End != 390 || call.StepSeconds != 30 {
+			t.Fatalf("range query = %#v; want start=90 end=390 step=30", call)
+		}
+	}
+
+	client.rangesQueries = nil
+	service.now = func() time.Time {
+		return time.Unix(419, 0)
+	}
+	if _, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window5m); err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	for _, call := range client.rangesQueries {
+		if call.Start != 90 || call.End != 390 || call.StepSeconds != 30 {
+			t.Fatalf("range query after refresh = %#v; want start=90 end=390 step=30", call)
+		}
+	}
+}
+
 func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
 		`sum(increase(app_request{service_id="svc-a",method="total"}[5m]))`:         3600,
@@ -369,35 +406,82 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 			},
 		},
 	}
-	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now: func() time.Time {
+			return time.Unix(1005, 0)
+		},
+	})
 
 	trend, err := service.GetComponentRealtimeTrend(context.Background(), "svc-a", model.Window5m)
 	if err != nil {
 		t.Fatalf("GetComponentRealtimeTrend() unexpected error: %v", err)
 	}
-	if len(trend.Points) != 2 {
-		t.Fatalf("points length = %d; want 2", len(trend.Points))
+	if len(trend.Points) != model.Window5m.BucketCount() {
+		t.Fatalf("points length = %d; want %d", len(trend.Points), model.Window5m.BucketCount())
 	}
-	if trend.Points[0].Timestamp != 1000 || trend.Points[1].Timestamp != 1005 {
+	firstActual := trend.Points[len(trend.Points)-2]
+	lastActual := trend.Points[len(trend.Points)-1]
+	if firstActual.Timestamp != 1000 || lastActual.Timestamp != 1005 {
 		t.Fatalf("timestamps = %#v", trend.Points)
 	}
-	if trend.Points[0].RequestPerSecond != float64(30)/model.BucketSize.Seconds() {
-		t.Fatalf("request per second = %v", trend.Points[0].RequestPerSecond)
+	if firstActual.RequestPerSecond != float64(30)/model.BucketSize.Seconds() {
+		t.Fatalf("request per second = %v", firstActual.RequestPerSecond)
 	}
-	if trend.Points[0].ErrorRate != 0.1 {
-		t.Fatalf("error rate = %v; want 0.1", trend.Points[0].ErrorRate)
+	if firstActual.ErrorRate != 0.1 {
+		t.Fatalf("error rate = %v; want 0.1", firstActual.ErrorRate)
 	}
-	if trend.Points[0].AvgLatencyMs != 50 {
-		t.Fatalf("latency = %v; want 50", trend.Points[0].AvgLatencyMs)
+	if firstActual.AvgLatencyMs != 50 {
+		t.Fatalf("latency = %v; want 50", firstActual.AvgLatencyMs)
 	}
-	if trend.Points[0].EgressBytesPerSec != 600 {
-		t.Fatalf("egress = %v; want 600", trend.Points[0].EgressBytesPerSec)
+	if firstActual.EgressBytesPerSec != 600 {
+		t.Fatalf("egress = %v; want 600", firstActual.EgressBytesPerSec)
 	}
-	if trend.Points[1].ErrorRate != 0.2 || trend.Points[1].AvgLatencyMs != 80 {
-		t.Fatalf("second point = %#v", trend.Points[1])
+	if lastActual.ErrorRate != 0.2 || lastActual.AvgLatencyMs != 80 {
+		t.Fatalf("second point = %#v", lastActual)
 	}
-	if trend.Points[1].EgressBytesPerSec != 400 {
-		t.Fatalf("second egress = %v; want 400", trend.Points[1].EgressBytesPerSec)
+	if lastActual.EgressBytesPerSec != 400 {
+		t.Fatalf("second egress = %v; want 400", lastActual.EgressBytesPerSec)
+	}
+}
+
+func TestOverviewServicePadsRouteGroupTrendToRequestedWindow(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1005,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 10,
+				},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now: func() time.Time {
+			return time.Unix(1005, 0)
+		},
+	})
+
+	trend, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window30m)
+	if err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	if store.window != model.Window30m {
+		t.Fatalf("store window = %s; want %s", store.window, model.Window30m)
+	}
+	if trend.Window != model.Window30m {
+		t.Fatalf("trend window = %s; want %s", trend.Window, model.Window30m)
+	}
+	if len(trend.Points) != model.Window30m.BucketCount() {
+		t.Fatalf("points length = %d; want %d", len(trend.Points), model.Window30m.BucketCount())
+	}
+	wantFirst := int64(1005) - int64(model.Window30m.BucketCount()-1)*int64(model.BucketSize/time.Second)
+	if trend.Points[0].Timestamp != wantFirst {
+		t.Fatalf("first timestamp = %d; want %d", trend.Points[0].Timestamp, wantFirst)
+	}
+	if trend.Points[len(trend.Points)-1].Timestamp != 1005 {
+		t.Fatalf("last timestamp = %d; want 1005", trend.Points[len(trend.Points)-1].Timestamp)
 	}
 }
 

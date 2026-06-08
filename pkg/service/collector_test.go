@@ -146,6 +146,43 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 }
 
+func TestCollectorUsesAccessLogTimestampForBucket(t *testing.T) {
+	store := &fakeAggregateStore{}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapper{mapping: model.RouteMapping{
+			TeamID:      "team-a",
+			AppID:       "app-a",
+			ComponentID: "svc-a",
+		}},
+		Now: func() time.Time {
+			return time.Unix(1710000060, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{
+		{
+			Timestamp:   "2024-03-09T16:00:07Z",
+			RouteID:     "route-a",
+			ServiceID:   "service-a",
+			URI:         "/api/ping",
+			Status:      200,
+			RequestTime: 0.086,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("writes length = 0; want > 0")
+	}
+	for _, write := range store.writes {
+		if write.BucketUnix != 1710000005 {
+			t.Fatalf("bucket = %d; want 1710000005", write.BucketUnix)
+		}
+	}
+}
+
 func TestCollectorFallsBackToRouteNameWhenApisixRouteIDIsInternalID(t *testing.T) {
 	store := &fakeAggregateStore{}
 	collector := NewInternalRouteCollector(CollectorConfig{

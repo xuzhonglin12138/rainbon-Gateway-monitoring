@@ -9,7 +9,8 @@ Rainbond 平台插件开发骨架模板。基于此模板可快速开发 Rainbon
 - 定时重验证授权状态（默认每 60 分钟）
 - 未授权时 `/static/main.js` 返回 403，`/healthz` 返回 503
 - 网络监控 Collector：接收 APISIX `http-logger` 日志并写入 Redis 热窗口聚合
-- Route 级挂载 APISIX `http-logger`：只处理 Rainbond 管理的 `ApisixRoute`
+- APISIX GlobalRule 级 `http-logger` 生命周期管理：安装/启用即采集，禁用即关闭
+- Route 级 `http-logger` 仅作为显式兼容模式，默认不修改用户 `ApisixRoute`
 - Redis-only 存储：5 秒 bucket、5m / 10m / 30m 窗口、route_id 映射缓存
 
 ## 项目结构
@@ -26,7 +27,7 @@ Rainbond 平台插件开发骨架模板。基于此模板可快速开发 Rainbon
 │   ├── model/           # 网络监控数据模型、窗口约束、Collector 日志结构
 │   ├── service/         # Collector 聚合、route_group 归类
 │   ├── repository/      # Redis-only 热窗口存储
-│   └── gateway/         # Route 级 http-logger 挂载与 route_id 映射
+│   └── gateway/         # APISIX http-logger 管理与 route_id 映射
 ├── deploy/
 │   └── rbdplugin.yaml   # RBDPlugin CRD + RBAC 示例
 ├── Dockerfile
@@ -83,11 +84,15 @@ make build-with-key
 | `NM_PROMETHEUS_URL` | `http://127.0.0.1:9999` | Prometheus API 地址 |
 | `NM_PROMETHEUS_TIMEOUT_SECONDS` | `3` | Prometheus 查询超时 |
 | `NM_DEFAULT_SLA_TARGET` | `0.999` | 默认应用 SLA 目标值 |
-| `NM_APISIX_NAMESPACES` | 空 | 可选预热扫描 namespace；常规场景由前端按当前团队 namespace 调用同步接口 |
+| `NM_HTTP_LOGGER_MODE` | `global` | `global` 使用 `ApisixGlobalRule` 管理采集；`route` 使用旧 Route 级挂载；`off` 不自动管理 APISIX `http-logger` |
+| `NM_APISIX_NAMESPACES` | 空 | 可选扫描 namespace 覆盖项；默认应由后端扫描 Rainbond 管理的 `ApisixRoute` 自动发现 |
+| `NM_APISIX_GLOBAL_RULE_NAMESPACE` | 空 | 可选固定 `ApisixGlobalRule` namespace；为空时按发现到的 APISIXRoute namespace 分组创建 |
+| `NM_APISIX_INGRESS_CLASS` | 空 | 可选固定 APISIX ingress class；为空时优先读取 `ApisixRoute.spec.ingressClassName` |
+| `NM_HTTP_LOGGER_GLOBAL_RULE_NAME` | `rainbond-gateway-monitoring-http-logger` | 插件管理的 GlobalRule 名称 |
 | `NM_COLLECTOR_URI` | `http://rainbond-gateway-monitoring.rbd-system.svc:8080/api/v1/collector/apisix/logs` | 写入到 APISIX `http-logger` 的 Collector 地址；需确保 APISIX 可访问 |
 | `NM_HTTP_LOGGER_TIMEOUT_SECONDS` | `3` | APISIX `http-logger` 超时 |
 | `NM_HTTP_LOGGER_SSL_VERIFY` | `false` | APISIX `http-logger` SSL 校验 |
-| `NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS` | `60` | Route 挂载同步周期 |
+| `NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS` | `60` | GlobalRule reconcile / Route 兼容模式同步周期 |
 | `NM_SNAPSHOT_REFRESH_SECONDS` | `5` | Redis TopN / summary 快照刷新周期 |
 | `NM_ROUTE_GROUP_LIMIT` | `100` | 每个应用 route_group 基数上限 |
 
@@ -135,16 +140,30 @@ kubectl apply -f deploy/rbdplugin.yaml
 | `GET /api/v1/apps/{app_id}/internal-routes/top-errors?window=5m` | 应用内部路由错误 TopN |
 | `GET /api/v1/apps/{app_id}/internal-routes/top-latency?window=5m` | 应用内部路由延迟 TopN |
 | `GET /api/v1/apps/{app_id}/sla?window=5m` | 应用 SLA，基于 `apisix_http_status` 入口 5xx 成功率计算 |
-| `POST /api/v1/apps/{app_id}/gateway/http-logger/sync` | 按当前应用和团队 namespace 同步 Route 级 `http-logger` |
+| `POST /api/v1/apps/{app_id}/gateway/http-logger/sync` | Route 级兼容同步接口；默认 GlobalRule 模式下不修改 `ApisixRoute` |
 | `GET /api/v1/components/{component_id}/internal-routes?window=5m` | 组件内部路由 TopN |
 
 `window` 只允许 `5m`、`10m`、`30m`，默认 `5m`。Collector 不保存 raw log，只写入 Redis 5 秒 bucket，bucket TTL 为 35 分钟。后台任务默认每 5 秒将 bucket 聚合成 `error-top`、`latency-top`、`request-top` 和 `summary` 快照，快照 TTL 为 120 秒，页面 API 读取快照返回。
 
-## APISIX http-logger 挂载策略
+## APISIX http-logger 采集策略
 
-本模板采用 Route 级挂载 APISIX `http-logger`，不使用 Global Rules，也不访问 APISIX Admin API。
+默认策略为 APISIX `ApisixGlobalRule` 级 `http-logger`。插件安装并启用后，后端根据 Rainbond 管理的 `ApisixRoute` 自动发现 namespace 和 `ingressClassName`，创建或更新插件专属 GlobalRule；插件禁用后删除自己管理的 GlobalRule。
 
-`deploy/rbdplugin.yaml` 中的 RBAC 只作为最小示例。应用页面打开后，前端应使用当前团队上下文调用同步接口，而不是依赖固定环境变量：
+默认模式不会修改用户的 `ApisixRoute.spec.http[*].plugins`，因此不会覆盖用户已有的 APISIXRoute 路由配置。插件只读取 `ApisixRoute` 做 route_id 映射，用于把 APISIX 日志归属到团队、应用、组件和内部路由。
+
+`deploy/rbdplugin.yaml` 中的 RBAC 示例默认按 GlobalRule 模式设计：
+
+- `apisixglobalrules get/list/watch/create/update/patch/delete`：管理插件专属 GlobalRule。
+- `apisixroutes get/list/watch`：只读扫描 Rainbond 路由和保存映射。
+- `rbdplugins get/list/watch`：读取 `plugin.rainbond.io/enable`，把 Rainbond 插件启停状态作为采集开关。
+
+如果集群不支持 `ApisixGlobalRule`，或需要兼容旧行为，可以显式配置：
+
+```bash
+NM_HTTP_LOGGER_MODE=route
+```
+
+Route 兼容模式下，应用页面可使用当前团队上下文调用同步接口：
 
 ```http
 POST /api/v1/apps/{console_group_id}/gateway/http-logger/sync
@@ -158,15 +177,15 @@ Content-Type: application/json
 
 后端使用 `namespace` 读取该团队下的 `ApisixRoute`，并优先用 `region_app_id` 匹配 APISIX Route 的 `metadata.labels.app_id`。这是因为 Rainbond Console 的 `group_id` 与 region 侧 `Application.app_id` 不是同一个标识。
 
-如果希望插件启动后后台预热，也可以设置 `NM_APISIX_NAMESPACES`。该变量只是可选兜底，不适合作为多团队应用的唯一 namespace 来源。无论采用前端触发还是后台预热，都需要为对应业务团队 namespace 绑定 `apisixroutes get/list/update` 权限，或按部署模型改成受控的 ClusterRole。
-
-当 `NM_APISIX_NAMESPACES` 非空时，后台任务会定期扫描这些 namespace 下由 Rainbond 管理的 `ApisixRoute`，判断规则包括：
+Route 兼容模式仍然只处理 Rainbond 管理的 route，判断规则包括：
 
 - `creator=Rainbond` / `creator=rainbond`
 - 存在 `app_id` 或 `service_alias` 标签
 - 存在值为 `service_alias` 的组件别名标签
 
-任务只追加或修正 `http-logger` 的 `enable`、`uri`、`timeout`、`ssl_verify` 字段，不删除、不覆盖其他插件配置。
+Route 兼容模式会追加或修正 `http-logger` 的 `enable`、`uri`、`timeout`、`ssl_verify` 字段，不删除其他插件配置。但如果用户在同一 route 上也配置了 `http-logger`，插件可能需要更新该同名插件配置。因此生产默认推荐使用 GlobalRule 模式。
+
+注意：如果用户同时手动配置 Route 级 `http-logger`，又启用了插件 GlobalRule，APISIX 可能对同一次请求发送重复日志。建议不要混用；后续实现可在 collector 按 request id 做短 TTL 去重。
 
 ## 与 rbd-api 的集成
 
@@ -222,7 +241,7 @@ Rainbond 的 `PluginBackendProxy` 会裁掉 `/backend/plugins/{pluginName}/` 前
 /api/v1/apps/12/sla
 ```
 
-按应用触发 Route 级 `http-logger` 同步时，前端应调用：
+默认 GlobalRule 模式下，前端不需要在应用页面触发 Route 级 `http-logger` 同步。该同步接口仅保留给 `NM_HTTP_LOGGER_MODE=route` 兼容模式使用：
 
 ```http
 POST /console/regions/{region}/backend/plugins/rainbond-gateway-monitoring/api/v1/apps/{console_group_id}/gateway/http-logger/sync
@@ -234,4 +253,4 @@ Content-Type: application/json
 }
 ```
 
-`namespace` 来自当前团队，`region_app_id` 用来匹配 APISIX Route 的 `metadata.labels.app_id`。不要把所有团队 namespace 固化进 `NM_APISIX_NAMESPACES`；该变量只适合启动时可选预热。
+`namespace` 来自当前团队，`region_app_id` 用来匹配 APISIX Route 的 `metadata.labels.app_id`。GlobalRule 默认模式应由插件后端自动发现需要采集的 namespace 和 ingress class，不需要把所有团队 namespace 固化进 `NM_APISIX_NAMESPACES`。

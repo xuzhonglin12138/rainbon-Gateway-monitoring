@@ -72,9 +72,9 @@ type OverviewService interface {
 	GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error)
 	GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error)
 	GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error)
-	GetPlatformRealtimeTrend(ctx context.Context) (model.OverviewTrend, error)
-	GetAppRealtimeTrend(ctx context.Context, appID string) (model.OverviewTrend, error)
-	GetComponentRealtimeTrend(ctx context.Context, componentID string) (model.OverviewTrend, error)
+	GetPlatformRealtimeTrend(ctx context.Context, window model.Window) (model.OverviewTrend, error)
+	GetAppRealtimeTrend(ctx context.Context, appID string, window model.Window) (model.OverviewTrend, error)
+	GetComponentRealtimeTrend(ctx context.Context, componentID string, window model.Window) (model.OverviewTrend, error)
 	GetPlatformNodeSummaries(ctx context.Context, window model.Window) ([]model.PlatformNodeSummary, error)
 	GetPlatformNodeDetail(ctx context.Context, nodeName string, window model.Window) (model.PlatformNodeDetail, error)
 }
@@ -747,22 +747,26 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
 		return
 	}
+	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+		return
+	}
 	s.logger.WithFields(logrus.Fields{
 		"scope_kind": scope.Kind,
 		"scope_id":   scope.ID,
-		"window":     model.Window5m,
+		"window":     window,
 	}).Info("querying overview trend")
 	var (
 		trend model.OverviewTrend
-		err   error
 	)
 	switch scope.Kind {
 	case model.ScopePlatform:
-		trend, err = s.overviewService.GetPlatformRealtimeTrend(r.Context())
+		trend, err = s.overviewService.GetPlatformRealtimeTrend(r.Context(), window)
 	case model.ScopeApp:
-		trend, err = s.overviewService.GetAppRealtimeTrend(r.Context(), scope.ID)
+		trend, err = s.overviewService.GetAppRealtimeTrend(r.Context(), scope.ID, window)
 	case model.ScopeComponent:
-		trend, err = s.overviewService.GetComponentRealtimeTrend(r.Context(), scope.ID)
+		trend, err = s.overviewService.GetComponentRealtimeTrend(r.Context(), scope.ID, window)
 	default:
 		err = fmt.Errorf("unsupported overview trend scope %s", scope.Kind)
 	}
@@ -770,13 +774,13 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 		s.logger.WithError(err).WithFields(logrus.Fields{
 			"scope_kind": scope.Kind,
 			"scope_id":   scope.ID,
-			"window":     model.Window5m,
+			"window":     window,
 		}).Warn("get overview trend failed")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"data":     model.OverviewTrend{Scope: scope, Window: model.Window5m, Points: []model.OverviewTrendPoint{}},
+			"data":     model.OverviewTrend{Scope: scope, Window: window, Points: []model.OverviewTrendPoint{}},
 			"warnings": []string{"prometheus overview trend query is unavailable"},
 			"meta": model.QueryMeta{
-				Window:  model.Window5m,
+				Window:  window,
 				Partial: true,
 				Stale:   true,
 			},
@@ -786,7 +790,7 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":     trend,
 		"warnings": []string{},
-		"meta":     model.QueryMeta{Window: model.Window5m},
+		"meta":     model.QueryMeta{Window: window},
 	})
 }
 

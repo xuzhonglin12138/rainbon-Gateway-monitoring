@@ -235,37 +235,39 @@ func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint) []mo
 	return points
 }
 
-func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context) (model.OverviewTrend, error) {
-	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "")
+func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context, window model.Window) (model.OverviewTrend, error) {
+	if trend, ok, err := s.realtimeBucketTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, window); err != nil {
+		return model.OverviewTrend{}, err
+	} else if ok {
+		return trend, nil
+	}
+	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "", window)
 }
 
-func (s *OverviewService) GetAppRealtimeTrend(ctx context.Context, appID string) (model.OverviewTrend, error) {
+func (s *OverviewService) GetAppRealtimeTrend(ctx context.Context, appID string, window model.Window) (model.OverviewTrend, error) {
+	if trend, ok, err := s.realtimeBucketTrend(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window); err != nil {
+		return model.OverviewTrend{}, err
+	} else if ok {
+		return trend, nil
+	}
 	routeMatcher, err := s.appRouteMatcher(ctx, appID)
 	if err != nil {
 		return model.OverviewTrend{}, err
 	}
-	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, routeMatcher)
+	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, routeMatcher, window)
 }
 
-func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, componentID string) (model.OverviewTrend, error) {
-	if s.routeGroupStore != nil {
-		buckets, err := s.routeGroupStore.ListRouteGroupBucketPoints(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, model.Window5m)
-		if err != nil {
-			return model.OverviewTrend{}, err
-		}
-		if len(buckets) > 0 {
-			return model.OverviewTrend{
-				Scope:  model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
-				Window: model.Window5m,
-				Points: componentTrendPointsFromBuckets(buckets),
-			}, nil
-		}
+func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, componentID string, window model.Window) (model.OverviewTrend, error) {
+	if trend, ok, err := s.realtimeBucketTrend(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window); err != nil {
+		return model.OverviewTrend{}, err
+	} else if ok {
+		return trend, nil
 	}
 	if s.prometheus == nil {
 		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
 	}
 	end := s.now().Unix()
-	start := end - int64(5*time.Minute/time.Second)
+	start := end - int64(window.Duration()/time.Second)
 	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(app_request{service_id="%s",method="total"}[1m]))`, componentID), start, end, 30)
 	if err != nil {
 		return model.OverviewTrend{}, err
@@ -299,9 +301,27 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 	}
 	return model.OverviewTrend{
 		Scope:  model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
-		Window: model.Window5m,
+		Window: window,
 		Points: points,
 	}, nil
+}
+
+func (s *OverviewService) realtimeBucketTrend(ctx context.Context, scope model.AggregateScope, window model.Window) (model.OverviewTrend, bool, error) {
+	if s.routeGroupStore == nil {
+		return model.OverviewTrend{}, false, nil
+	}
+	buckets, err := s.routeGroupStore.ListRouteGroupBucketPoints(ctx, scope, window)
+	if err != nil {
+		return model.OverviewTrend{}, false, err
+	}
+	if len(buckets) == 0 {
+		return model.OverviewTrend{}, false, nil
+	}
+	return model.OverviewTrend{
+		Scope:  scope,
+		Window: window,
+		Points: componentTrendPointsFromBuckets(buckets),
+	}, true, nil
 }
 
 func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window model.Window) ([]model.PlatformNodeSummary, error) {
@@ -469,12 +489,12 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	}, nil
 }
 
-func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.AggregateScope, routeMatcher string) (model.OverviewTrend, error) {
+func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.AggregateScope, routeMatcher string, window model.Window) (model.OverviewTrend, error) {
 	if s.prometheus == nil {
 		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
 	}
 	end := s.now().Unix()
-	start := end - int64(5*time.Minute/time.Second)
+	start := end - int64(window.Duration()/time.Second)
 	routeLabel := prometheusRouteLabel(routeMatcher)
 	selector := metricSelector(routeLabel)
 	selectorWithCode := metricSelector(routeLabel, `code=~"5.."`)
@@ -517,7 +537,7 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 			EgressBytesPerSec: egressValues[timestamp],
 		})
 	}
-	return model.OverviewTrend{Scope: scope, Window: model.Window5m, Points: points}, nil
+	return model.OverviewTrend{Scope: scope, Window: window, Points: points}, nil
 }
 
 func (s *OverviewService) appRouteMatcher(ctx context.Context, appID string) (string, error) {

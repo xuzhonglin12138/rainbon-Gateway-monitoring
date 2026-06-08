@@ -211,7 +211,7 @@ func TestOverviewServiceGetsGatewayRealtimeTrend(t *testing.T) {
 		return time.Unix(400, 0)
 	}})
 
-	trend, err := service.GetPlatformRealtimeTrend(context.Background())
+	trend, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window5m)
 	if err != nil {
 		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestOverviewServiceSanitizesNonFiniteRealtimeTrendValues(t *testing.T) {
 		return time.Unix(400, 0)
 	}})
 
-	trend, err := service.GetPlatformRealtimeTrend(context.Background())
+	trend, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window5m)
 	if err != nil {
 		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	}
 	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
 
-	trend, err := service.GetComponentRealtimeTrend(context.Background(), "svc-a")
+	trend, err := service.GetComponentRealtimeTrend(context.Background(), "svc-a", model.Window5m)
 	if err != nil {
 		t.Fatalf("GetComponentRealtimeTrend() unexpected error: %v", err)
 	}

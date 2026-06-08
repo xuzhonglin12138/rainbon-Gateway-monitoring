@@ -33,32 +33,32 @@ func (f *fakeOverviewService) GetComponentOverview(_ context.Context, componentI
 	return model.Overview{Scope: f.scope, Window: window, ThroughputPerSecond: 3}, nil
 }
 
-func (f *fakeOverviewService) GetPlatformRealtimeTrend(_ context.Context) (model.OverviewTrend, error) {
+func (f *fakeOverviewService) GetPlatformRealtimeTrend(_ context.Context, window model.Window) (model.OverviewTrend, error) {
 	f.scope = model.AggregateScope{Kind: model.ScopePlatform}
-	f.window = model.Window5m
+	f.window = window
 	return model.OverviewTrend{
 		Scope:  f.scope,
-		Window: model.Window5m,
+		Window: window,
 		Points: []model.OverviewTrendPoint{{Timestamp: 100, RequestPerSecond: 2}},
 	}, nil
 }
 
-func (f *fakeOverviewService) GetAppRealtimeTrend(_ context.Context, appID string) (model.OverviewTrend, error) {
+func (f *fakeOverviewService) GetAppRealtimeTrend(_ context.Context, appID string, window model.Window) (model.OverviewTrend, error) {
 	f.scope = model.AggregateScope{Kind: model.ScopeApp, ID: appID}
-	f.window = model.Window5m
+	f.window = window
 	return model.OverviewTrend{
 		Scope:  f.scope,
-		Window: model.Window5m,
+		Window: window,
 		Points: []model.OverviewTrendPoint{{Timestamp: 100, RequestPerSecond: 3}},
 	}, nil
 }
 
-func (f *fakeOverviewService) GetComponentRealtimeTrend(_ context.Context, componentID string) (model.OverviewTrend, error) {
+func (f *fakeOverviewService) GetComponentRealtimeTrend(_ context.Context, componentID string, window model.Window) (model.OverviewTrend, error) {
 	f.scope = model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}
-	f.window = model.Window5m
+	f.window = window
 	return model.OverviewTrend{
 		Scope:  f.scope,
-		Window: model.Window5m,
+		Window: window,
 		Points: []model.OverviewTrendPoint{{Timestamp: 100, RequestPerSecond: 4}},
 	}, nil
 }
@@ -124,6 +124,9 @@ func TestServerHandlesOverviewTrendRoutes(t *testing.T) {
 		{path: "/api/v1/platform/overview/trend", want: `"request_per_second":2`},
 		{path: "/api/v1/apps/app-a/overview/trend", want: `"request_per_second":3`},
 		{path: "/api/v1/components/svc-a/overview/trend", want: `"request_per_second":4`},
+		{path: "/api/v1/platform/overview/trend?window=30m", want: `"window":"30m"`},
+		{path: "/api/v1/apps/app-a/overview/trend?window=10m", want: `"window":"10m"`},
+		{path: "/api/v1/components/svc-a/overview/trend?window=30m", want: `"window":"30m"`},
 	}
 	for _, tt := range tests {
 		rec := httptest.NewRecorder()

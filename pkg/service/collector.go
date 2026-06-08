@@ -264,16 +264,27 @@ func parseAccessLogTimestamp(value string) (time.Time, bool) {
 }
 
 func (c *InternalRouteCollector) resolveMapping(ctx context.Context, log model.ApisixAccessLog) (model.RouteMapping, error) {
+	var firstErr error
 	if log.RouteID != "" {
 		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteID, log.ServiceID)
 		if err == nil {
 			return mapping, nil
 		}
-		if log.RouteName == "" || log.RouteName == log.RouteID {
-			return model.RouteMapping{}, err
+		firstErr = err
+	}
+	if log.RouteName != "" && log.RouteName != log.RouteID {
+		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteName, log.ServiceID)
+		if err == nil {
+			return mapping, nil
+		}
+		if firstErr == nil {
+			firstErr = err
 		}
 	}
-	return c.mapper.ResolveRoute(ctx, log.RouteName, log.ServiceID)
+	if firstErr != nil {
+		return model.RouteMapping{}, firstErr
+	}
+	return model.RouteMapping{ComponentID: log.ServiceID}, nil
 }
 
 func (c *InternalRouteCollector) resolveRouteGroup(ctx context.Context, mapping model.RouteMapping, log model.ApisixAccessLog) string {

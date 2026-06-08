@@ -19,6 +19,7 @@ type fakeRouteClient struct {
 type fakeRouteMappingStore struct {
 	mappings       []string
 	routeMappings  []model.RouteMapping
+	ttls           []time.Duration
 	replacedAppID  string
 	replacedRoutes []string
 }
@@ -32,9 +33,10 @@ func (f *fakeRouteClient) Update(_ context.Context, _ string, route *unstructure
 	return nil
 }
 
-func (f *fakeRouteMappingStore) SaveRouteMapping(_ context.Context, mapping model.RouteMapping, _ time.Duration) error {
+func (f *fakeRouteMappingStore) SaveRouteMapping(_ context.Context, mapping model.RouteMapping, ttl time.Duration) error {
 	f.mappings = append(f.mappings, mapping.AppID)
 	f.routeMappings = append(f.routeMappings, mapping)
+	f.ttls = append(f.ttls, ttl)
 	return nil
 }
 
@@ -108,6 +110,11 @@ func TestHTTPLoggerAttachJobStoresConsoleAppIDWhenMatchingRegionAppID(t *testing
 	}
 	if len(store.mappings) == 0 {
 		t.Fatal("no route mappings were saved")
+	}
+	for _, ttl := range store.ttls {
+		if ttl != defaultRouteMappingTTL {
+			t.Fatalf("route mapping ttl = %s; want %s", ttl, defaultRouteMappingTTL)
+		}
 	}
 	for _, appID := range store.mappings {
 		if appID != "console-app-a" {

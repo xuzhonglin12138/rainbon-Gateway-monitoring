@@ -20,6 +20,8 @@ var apisixRouteGVR = schema.GroupVersionResource{
 	Resource: "apisixroutes",
 }
 
+const defaultRouteMappingTTL = 24 * time.Hour
+
 var apisixUpstreamGVR = schema.GroupVersionResource{
 	Group:    "apisix.apache.org",
 	Version:  "v2",
@@ -301,7 +303,7 @@ func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string
 			mapping.AppID = j.MappingAppID
 		}
 		mapping = applyRouteMappingMetadata(mapping, j.Metadata)
-		if err := j.MappingStore.SaveRouteMapping(ctx, mapping, 10*time.Minute); err != nil {
+		if err := j.MappingStore.SaveRouteMapping(ctx, mapping, defaultRouteMappingTTL); err != nil {
 			return nil, fmt.Errorf("save route mapping %s: %w", mapping.RouteID, err)
 		}
 		mappings[i] = mapping

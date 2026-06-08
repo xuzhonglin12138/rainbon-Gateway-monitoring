@@ -561,12 +561,12 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.httpLoggerMode == "global" || s.httpLoggerMode == "off" {
+	if s.httpLoggerMode == "off" {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"data": map[string]interface{}{
 				"mode":    s.httpLoggerMode,
 				"synced":  false,
-				"message": "http-logger is managed by ApisixGlobalRule",
+				"message": "http-logger is disabled",
 			},
 		})
 		return
@@ -660,6 +660,8 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 			"namespace":       payload.Namespace,
 			"app_id":          appID,
 			"region_app_id":   syncAppID,
+			"mode":            s.httpLoggerMode,
+			"synced":          true,
 			"region_name":     payload.RegionName,
 			"team_name":       payload.TeamName,
 			"team_alias":      payload.TeamAlias,

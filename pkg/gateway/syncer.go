@@ -13,6 +13,7 @@ type HTTPLoggerSyncer struct {
 	Client       RouteClient
 	MappingStore RouteMappingStore
 	Config       HTTPLoggerConfig
+	MappingOnly  bool
 	Logger       *logrus.Logger
 }
 
@@ -41,6 +42,7 @@ func (s HTTPLoggerSyncer) SyncHTTPLoggerForAppRoutesWithMetadata(ctx context.Con
 		Metadata:       metadata,
 		ServiceAliases: serviceAliases,
 		Config:         s.Config,
+		MappingOnly:    s.MappingOnly,
 		Interval:       time.Minute,
 		Logger:         s.Logger,
 	}

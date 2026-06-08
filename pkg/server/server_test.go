@@ -339,23 +339,27 @@ func TestServerHandlesAppHTTPLoggerSyncWithServiceAliases(t *testing.T) {
 	}
 }
 
-func TestServerReturnsCompatibilityResponseForGlobalHTTPLoggerMode(t *testing.T) {
+func TestServerRefreshesRouteMappingsForGlobalHTTPLoggerMode(t *testing.T) {
 	syncer := &fakeHTTPLoggerSyncer{}
 	server := New(Config{HTTPLoggerMode: "global", HTTPLoggerSyncer: syncer})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/12/gateway/http-logger/sync", strings.NewReader(`{}`))
+	payload := `{"namespace":"team-ns","region_app_id":"region-app-a","app_name":"订单系统","service_aliases":["gr1ea4bc"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/12/gateway/http-logger/sync", strings.NewReader(payload))
 	resp := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(resp, req)
 
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
 	}
-	if syncer.namespace != "" || syncer.matchAppID != "" || syncer.mappingAppID != "" {
-		t.Fatalf("syncer was called in global mode: %#v", syncer)
+	if syncer.namespace != "team-ns" || syncer.matchAppID != "region-app-a" || syncer.mappingAppID != "12" {
+		t.Fatalf("syncer call = %#v; want global mode to refresh console app mapping", syncer)
+	}
+	if len(syncer.serviceAliases) != 1 || syncer.serviceAliases[0] != "gr1ea4bc" {
+		t.Fatalf("service aliases = %#v; want gr1ea4bc", syncer.serviceAliases)
 	}
 	body := resp.Body.String()
-	if !strings.Contains(body, `"mode":"global"`) || !strings.Contains(body, `"synced":false`) {
-		t.Fatalf("response body = %s; want global compatibility response", body)
+	if !strings.Contains(body, `"mode":"global"`) || !strings.Contains(body, `"synced":true`) {
+		t.Fatalf("response body = %s; want global mapping refresh response", body)
 	}
 }
 

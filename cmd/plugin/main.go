@@ -173,10 +173,12 @@ func main() {
 		LogFormat: gateway.DefaultHTTPLoggerLogFormat(),
 	}
 	httpLoggerMode := httpLoggerModeFromEnv(logger)
+	licenseBypass := envBool("NM_SKIP_LICENSE_CHECK", false)
 	httpLoggerSyncer := gateway.HTTPLoggerSyncer{
 		Client:       routeClient,
 		MappingStore: redisStore,
 		Config:       httpLoggerConfig,
+		MappingOnly:  httpLoggerMode == "global",
 		Logger:       logger,
 	}
 
@@ -210,7 +212,7 @@ func main() {
 			Config:              httpLoggerConfig,
 			Interval:            time.Duration(envInt("NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS", 60)) * time.Second,
 			Ready: func() bool {
-				return checker.IsValid() && collector != nil
+				return collector != nil && (licenseBypass || checker.IsValid())
 			},
 			Logger: logger,
 		}

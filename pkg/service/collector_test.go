@@ -146,6 +146,44 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 }
 
+func TestCollectorFallsBackToRouteNameWhenRouteIDMappingMissing(t *testing.T) {
+	store := &fakeAggregateStore{}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store: store,
+		Mapper: fakeRouteMapperByID{
+			"xuzl_gr1ea4bc-8080-demo_child": {
+				TeamID:      "team-a",
+				AppID:       "app-a",
+				ComponentID: "gr1ea4bc",
+				Namespace:   "xuzl",
+			},
+		},
+		Now: func() time.Time {
+			return time.Unix(1710000007, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{{
+		RouteID:     "19963474",
+		RouteName:   "xuzl_gr1ea4bc-8080-demo_child",
+		URI:         "/api/random",
+		Status:      200,
+		RequestTime: 0.05,
+	}})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+
+	if len(store.writes) == 0 {
+		t.Fatal("no aggregate writes; want route_name fallback to produce metrics")
+	}
+	for _, write := range store.writes {
+		if write.Metric.AppID != "app-a" || write.Metric.ComponentID != "gr1ea4bc" {
+			t.Fatalf("metric identity = %#v; want mapped app/component", write.Metric)
+		}
+	}
+}
+
 func TestCollectorKeepsDistinctBucketsSeparateWhenBatchAggregating(t *testing.T) {
 	store := &fakeAggregateStore{}
 	collector := NewInternalRouteCollector(CollectorConfig{

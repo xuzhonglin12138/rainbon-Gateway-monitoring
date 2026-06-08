@@ -9,7 +9,7 @@ Rainbond 平台插件开发骨架模板。基于此模板可快速开发 Rainbon
 - 定时重验证授权状态（默认每 60 分钟）
 - 未授权时 `/static/main.js` 返回 403，`/healthz` 返回 503
 - 网络监控 Collector：接收 APISIX `http-logger` 日志并写入 Redis 热窗口聚合
-- APISIX GlobalRule 级 `http-logger` 生命周期管理：安装/启用即采集，禁用即关闭
+- APISIX GlobalRule 级 `http-logger` 生命周期管理：插件运行且 Collector 健康即采集，优雅停止时关闭
 - Route 级 `http-logger` 仅作为显式兼容模式，默认不修改用户 `ApisixRoute`
 - Redis-only 存储：5 秒 bucket、5m / 10m / 30m 窗口、route_id 映射缓存
 
@@ -147,7 +147,7 @@ kubectl apply -f deploy/rbdplugin.yaml
 
 ## APISIX http-logger 采集策略
 
-默认策略为 APISIX `ApisixGlobalRule` 级 `http-logger`。插件安装并启用后，后端根据 Rainbond 管理的 `ApisixRoute` 自动发现 namespace 和 `ingressClassName`，创建或更新插件专属 GlobalRule；插件禁用后删除自己管理的 GlobalRule。
+默认策略为 APISIX `ApisixGlobalRule` 级 `http-logger`。插件后端运行且 Collector 健康时，根据 Rainbond 管理的 `ApisixRoute` 自动发现 namespace 和 `ingressClassName`，创建或更新插件专属 GlobalRule；插件进程优雅停止时删除自己管理的 GlobalRule。
 
 默认模式不会修改用户的 `ApisixRoute.spec.http[*].plugins`，因此不会覆盖用户已有的 APISIXRoute 路由配置。插件只读取 `ApisixRoute` 做 route_id 映射，用于把 APISIX 日志归属到团队、应用、组件和内部路由。
 
@@ -155,7 +155,14 @@ kubectl apply -f deploy/rbdplugin.yaml
 
 - `apisixglobalrules get/list/watch/create/update/patch/delete`：管理插件专属 GlobalRule。
 - `apisixroutes get/list/watch`：只读扫描 Rainbond 路由和保存映射。
-- `rbdplugins get/list/watch`：读取 `plugin.rainbond.io/enable`，把 Rainbond 插件启停状态作为采集开关。
+
+采集开关不依赖 `plugin.rainbond.io/enable`。当前 Rainbond 前端没有平台插件启停入口，因此插件以自身运行状态作为采集生命周期来源：
+
+- 插件进程启动并且 Collector ready：确保 GlobalRule 存在。
+- 插件收到 SIGTERM / preStop 优雅退出：删除带有插件管理 label 的 GlobalRule。
+- `NM_HTTP_LOGGER_MODE=off` 或 Collector 不可用：不创建 GlobalRule，并清理已管理的 GlobalRule。
+
+如果插件进程异常崩溃，进程本身无法主动删除 Kubernetes 资源；这种场景需要依赖下次启动时清理残留 GlobalRule，或后续在 Rainbond 平台侧补充卸载钩子 / 外部清理控制器。
 
 如果集群不支持 `ApisixGlobalRule`，或需要兼容旧行为，可以显式配置：
 

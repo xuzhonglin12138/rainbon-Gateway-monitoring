@@ -8,8 +8,6 @@ apiVersion: rainbond.io/v1alpha1
 kind: RBDPlugin
 metadata:
   name: rainbond-gateway-monitoring
-  labels:
-    plugin.rainbond.io/enable: "true"
 spec:
   display_name: "Rainbond Gateway Monitoring"
   description: "Rainbond APISIX gateway and internal route monitoring plugin"
@@ -20,9 +18,9 @@ spec:
   # rbd-api PluginBackendProxy forwards /api/v1/* to this service.
   backend_service: "http://rainbond-gateway-monitoring.rbd-system.svc:8080"
 ---
-# RBAC: allow the plugin pod to read the license ConfigMap, read its
-# RBDPlugin enable label, manage plugin-owned APISIX GlobalRules, and
-# scan Rainbond-owned APISIX Routes without mutating user route specs.
+# RBAC: allow the plugin pod to read the license ConfigMap, manage
+# plugin-owned APISIX GlobalRules, and scan Rainbond-owned APISIX
+# Routes without mutating user route specs.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -65,9 +63,6 @@ rules:
 - apiGroups: ["apisix.apache.org"]
   resources: ["apisixglobalrules"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["rainbond.io"]
-  resources: ["rbdplugins"]
-  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

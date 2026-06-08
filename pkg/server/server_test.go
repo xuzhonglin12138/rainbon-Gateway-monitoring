@@ -339,6 +339,26 @@ func TestServerHandlesAppHTTPLoggerSyncWithServiceAliases(t *testing.T) {
 	}
 }
 
+func TestServerReturnsCompatibilityResponseForGlobalHTTPLoggerMode(t *testing.T) {
+	syncer := &fakeHTTPLoggerSyncer{}
+	server := New(Config{HTTPLoggerMode: "global", HTTPLoggerSyncer: syncer})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/12/gateway/http-logger/sync", strings.NewReader(`{}`))
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+	if syncer.namespace != "" || syncer.matchAppID != "" || syncer.mappingAppID != "" {
+		t.Fatalf("syncer was called in global mode: %#v", syncer)
+	}
+	body := resp.Body.String()
+	if !strings.Contains(body, `"mode":"global"`) || !strings.Contains(body, `"synced":false`) {
+		t.Fatalf("response body = %s; want global compatibility response", body)
+	}
+}
+
 func TestServerRejectsHTTPLoggerSyncWithoutNamespace(t *testing.T) {
 	server := New(Config{HTTPLoggerSyncer: &fakeHTTPLoggerSyncer{}})
 

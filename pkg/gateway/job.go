@@ -93,6 +93,7 @@ type HTTPLoggerAttachJob struct {
 	Metadata       model.RouteMappingMetadata
 	ServiceAliases []string
 	Config         HTTPLoggerConfig
+	MappingOnly    bool
 	Interval       time.Duration
 	Logger         *logrus.Logger
 }
@@ -136,8 +137,8 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 			}).Info("scanned apisix routes for http-logger")
 		}
 		for _, route := range routes {
-			routeMatch := j.matchRoute(route)
 			managed := IsRainbondManagedRoute(route)
+			routeMatch := j.matchRoute(route)
 			if j.Logger != nil && route != nil {
 				labels := route.GetLabels()
 				j.Logger.WithFields(logrus.Fields{
@@ -153,7 +154,18 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 					"service_aliases":     strings.Join(normalizeServiceAliases(j.ServiceAliases), ","),
 				}).Info("checked apisix route for http-logger")
 			}
+			if !managed {
+				continue
+			}
 			if !routeMatch.matched {
+				continue
+			}
+			if j.MappingOnly {
+				mappings, err := j.saveMappings(ctx, namespace, route)
+				if err != nil {
+					return err
+				}
+				rememberAppPrometheusRoutes(appRoutes, appRouteSeen, mappings)
 				continue
 			}
 			changed, err := EnsureHTTPLoggerPlugin(route, j.Config)
@@ -264,6 +276,9 @@ func (j *HTTPLoggerAttachJob) Start(ctx context.Context) {
 }
 
 func (j *HTTPLoggerAttachJob) saveMappings(ctx context.Context, namespace string, route *unstructured.Unstructured) ([]model.RouteMapping, error) {
+	if namespace == "" && route != nil {
+		namespace = route.GetNamespace()
+	}
 	if j.MappingStore == nil {
 		if j.Logger != nil && route != nil {
 			j.Logger.WithFields(logrus.Fields{

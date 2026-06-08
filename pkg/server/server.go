@@ -31,6 +31,7 @@ type Server struct {
 	configStore      ConfigStore
 	defaultSLATarget float64
 	httpLoggerSyncer HTTPLoggerSyncer
+	httpLoggerMode   string
 }
 
 // Config holds the server configuration.
@@ -46,6 +47,7 @@ type Config struct {
 	ConfigStore      ConfigStore
 	DefaultSLATarget float64
 	HTTPLoggerSyncer HTTPLoggerSyncer
+	HTTPLoggerMode   string
 }
 
 type RouteGroupQueryStore interface {
@@ -113,6 +115,7 @@ func New(cfg Config) *Server {
 	if cfg.DefaultSLATarget <= 0 {
 		cfg.DefaultSLATarget = 0.999
 	}
+	cfg.HTTPLoggerMode = normalizeHTTPLoggerMode(cfg.HTTPLoggerMode)
 
 	s := &Server{
 		checker:          cfg.Checker,
@@ -125,6 +128,7 @@ func New(cfg Config) *Server {
 		configStore:      cfg.ConfigStore,
 		defaultSLATarget: cfg.DefaultSLATarget,
 		httpLoggerSyncer: cfg.HTTPLoggerSyncer,
+		httpLoggerMode:   cfg.HTTPLoggerMode,
 	}
 
 	mux := http.NewServeMux()
@@ -557,6 +561,16 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.httpLoggerMode == "global" || s.httpLoggerMode == "off" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"data": map[string]interface{}{
+				"mode":    s.httpLoggerMode,
+				"synced":  false,
+				"message": "http-logger is managed by ApisixGlobalRule",
+			},
+		})
+		return
+	}
 	if s.httpLoggerSyncer == nil {
 		http.Error(w, "http logger syncer is not configured", http.StatusServiceUnavailable)
 		return
@@ -653,6 +667,16 @@ func (s *Server) handleAppHTTPLoggerSync(w http.ResponseWriter, r *http.Request,
 			"service_aliases": serviceAliases,
 		},
 	})
+}
+
+func normalizeHTTPLoggerMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "global", "off":
+		return mode
+	default:
+		return "route"
+	}
 }
 
 func (s *Server) handleComponentRoutes(w http.ResponseWriter, r *http.Request) {

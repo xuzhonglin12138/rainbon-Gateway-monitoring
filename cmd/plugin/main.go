@@ -172,6 +172,7 @@ func main() {
 		SSLVerify: envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
 		LogFormat: gateway.DefaultHTTPLoggerLogFormat(),
 	}
+	httpLoggerMode := httpLoggerModeFromEnv(logger)
 	httpLoggerSyncer := gateway.HTTPLoggerSyncer{
 		Client:       routeClient,
 		MappingStore: redisStore,
@@ -180,17 +181,54 @@ func main() {
 	}
 
 	namespaces := splitCSV(os.Getenv("NM_APISIX_NAMESPACES"))
-	if len(namespaces) > 0 {
-		logger.WithField("namespaces", namespaces).Info("Starting APISIX route-level http-logger attach job")
-		job := &gateway.HTTPLoggerAttachJob{
-			Client:       routeClient,
-			MappingStore: redisStore,
-			Namespaces:   namespaces,
-			Config:       httpLoggerConfig,
-			Interval:     time.Duration(envInt("NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS", 60)) * time.Second,
-			Logger:       logger,
+	var globalHTTPLoggerJob *gateway.GlobalHTTPLoggerJob
+	switch httpLoggerMode {
+	case "route":
+		if len(namespaces) > 0 {
+			logger.WithField("namespaces", namespaces).Info("Starting APISIX route-level http-logger attach job")
+			job := &gateway.HTTPLoggerAttachJob{
+				Client:       routeClient,
+				MappingStore: redisStore,
+				Namespaces:   namespaces,
+				Config:       httpLoggerConfig,
+				Interval:     time.Duration(envInt("NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS", 60)) * time.Second,
+				Logger:       logger,
+			}
+			job.Start(ctx)
+		} else {
+			logger.Info("route-level http-logger mode selected but NM_APISIX_NAMESPACES is empty; background attach job is disabled")
 		}
-		job.Start(ctx)
+	case "global":
+		globalHTTPLoggerJob = &gateway.GlobalHTTPLoggerJob{
+			RouteClient:         routeClient,
+			GlobalRules:         gateway.NewDynamicGlobalRuleClient(dynamicClient),
+			MappingStore:        redisStore,
+			Namespaces:          namespaces,
+			GlobalRuleName:      envOrDefault("NM_HTTP_LOGGER_GLOBAL_RULE_NAME", gateway.DefaultHTTPLoggerGlobalRuleName),
+			GlobalRuleNamespace: strings.TrimSpace(os.Getenv("NM_APISIX_GLOBAL_RULE_NAMESPACE")),
+			IngressClassName:    strings.TrimSpace(os.Getenv("NM_APISIX_INGRESS_CLASS")),
+			Config:              httpLoggerConfig,
+			Interval:            time.Duration(envInt("NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS", 60)) * time.Second,
+			Ready: func() bool {
+				return checker.IsValid() && collector != nil
+			},
+			Logger: logger,
+		}
+		globalHTTPLoggerJob.Start(ctx)
+	case "off":
+		cleanupJob := &gateway.GlobalHTTPLoggerJob{
+			GlobalRules:         gateway.NewDynamicGlobalRuleClient(dynamicClient),
+			Namespaces:          namespaces,
+			GlobalRuleName:      envOrDefault("NM_HTTP_LOGGER_GLOBAL_RULE_NAME", gateway.DefaultHTTPLoggerGlobalRuleName),
+			GlobalRuleNamespace: strings.TrimSpace(os.Getenv("NM_APISIX_GLOBAL_RULE_NAMESPACE")),
+			IngressClassName:    strings.TrimSpace(os.Getenv("NM_APISIX_INGRESS_CLASS")),
+			Config:              httpLoggerConfig,
+			Ready:               func() bool { return false },
+			Logger:              logger,
+		}
+		if err := cleanupJob.Cleanup(ctx); err != nil {
+			logger.WithError(err).Warn("cleanup global http-logger failed")
+		}
 	}
 
 	// HTTP server
@@ -206,6 +244,7 @@ func main() {
 		ConfigStore:      redisStore,
 		DefaultSLATarget: envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
 		HTTPLoggerSyncer: httpLoggerSyncer,
+		HTTPLoggerMode:   httpLoggerMode,
 	})
 
 	go func() {
@@ -228,6 +267,11 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
+	if globalHTTPLoggerJob != nil {
+		if err := globalHTTPLoggerJob.Cleanup(shutdownCtx); err != nil {
+			logger.WithError(err).Warn("cleanup global http-logger during shutdown failed")
+		}
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.WithError(err).Error("Shutdown error")
 	}
@@ -254,6 +298,22 @@ func collectorURIFromEnv() string {
 		return configured
 	}
 	return DefaultCollectorURI
+}
+
+func httpLoggerModeFromEnv(logger *logrus.Logger) string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("NM_HTTP_LOGGER_MODE")))
+	if mode == "" {
+		mode = "global"
+	}
+	switch mode {
+	case "global", "route", "off":
+		return mode
+	default:
+		if logger != nil {
+			logger.WithField("mode", mode).Warn("invalid NM_HTTP_LOGGER_MODE, using global")
+		}
+		return "global"
+	}
 }
 
 func isKubernetesServiceURI(uri string) bool {

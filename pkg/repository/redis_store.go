@@ -138,7 +138,7 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 	if limit <= 0 {
 		limit = 50
 	}
-	metrics, err := s.aggregateAppMetrics(ctx, scope, window)
+	metrics, routeMetrics, err := s.aggregateAppMetrics(ctx, scope, window)
 	if err != nil {
 		return nil, err
 	}
@@ -152,23 +152,29 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 		if appID == "" {
 			name = "unknown_app"
 		}
+		errorRoute := topErrorRouteGroup(routeMetrics[appID])
+		latencyRoute := topLatencyRouteGroup(routeMetrics[appID])
 		items = append(items, model.AppTrafficItem{
-			AppID:               appID,
-			TeamID:              metric.TeamID,
-			TeamName:            metric.TeamName,
-			TeamAlias:           metric.TeamAlias,
-			Namespace:           metric.Namespace,
-			RegionAppID:         metric.RegionAppID,
-			AppName:             metric.AppName,
-			RegionName:          metric.RegionName,
-			Name:                name,
-			RequestCount:        metric.RequestCount,
-			ErrorCount:          metric.ErrorCount,
-			ErrorRate:           metric.ErrorRate(),
-			UpstreamErrorCount:  metric.UpstreamErrorCount,
-			UpstreamErrorRate:   metric.UpstreamErrorRate(),
-			AvgLatencyMs:        metric.AvgLatencyMs(),
-			ThroughputPerSecond: float64(metric.RequestCount) / windowSeconds,
+			AppID:                appID,
+			TeamID:               metric.TeamID,
+			TeamName:             metric.TeamName,
+			TeamAlias:            metric.TeamAlias,
+			Namespace:            metric.Namespace,
+			RegionAppID:          metric.RegionAppID,
+			AppName:              metric.AppName,
+			RegionName:           metric.RegionName,
+			Name:                 name,
+			RequestCount:         metric.RequestCount,
+			ErrorCount:           metric.ErrorCount,
+			ErrorRate:            metric.ErrorRate(),
+			UpstreamErrorCount:   metric.UpstreamErrorCount,
+			UpstreamErrorRate:    metric.UpstreamErrorRate(),
+			AvgLatencyMs:         metric.AvgLatencyMs(),
+			ThroughputPerSecond:  float64(metric.RequestCount) / windowSeconds,
+			TopErrorRouteGroup:   errorRoute.RouteGroup,
+			TopErrorRouteErrors:  errorRoute.ErrorCount,
+			TopLatencyRouteGroup: latencyRoute.RouteGroup,
+			TopLatencyRouteAvgMs: latencyRoute.AvgLatencyMs(),
 		})
 	}
 	sortAppTrafficItems(items, sortBy)
@@ -308,14 +314,15 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 	return items, nil
 }
 
-func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
+func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
 	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	keys := stringSlice(keysValue)
 	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
 	metrics := make(map[string]model.RouteGroupMetric)
+	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
 		if !ok || bucketUnix < minBucket {
@@ -323,7 +330,7 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		metric := metricFromHash(values)
 		if metric.AppID == "" {
@@ -345,8 +352,22 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 		current.AppName = firstNonEmpty(current.AppName, metric.AppName)
 		current.RegionName = firstNonEmpty(current.RegionName, metric.RegionName)
 		metrics[metric.AppID] = current
+		if metric.RouteGroup != "" {
+			if routeMetrics[metric.AppID] == nil {
+				routeMetrics[metric.AppID] = make(map[string]model.RouteGroupMetric)
+			}
+			currentRoute := routeMetrics[metric.AppID][metric.RouteGroup]
+			currentRoute.RouteGroup = metric.RouteGroup
+			currentRoute.RequestCount += metric.RequestCount
+			currentRoute.ErrorCount += metric.ErrorCount
+			currentRoute.UpstreamErrorCount += metric.UpstreamErrorCount
+			currentRoute.LatencySumMs += metric.LatencySumMs
+			currentRoute.LatencyCount += metric.LatencyCount
+			currentRoute.EgressBytes += metric.EgressBytes
+			routeMetrics[metric.AppID][metric.RouteGroup] = currentRoute
+		}
 	}
-	return metrics, nil
+	return metrics, routeMetrics, nil
 }
 
 func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
@@ -747,4 +768,32 @@ func sortAppTrafficItems(items []model.AppTrafficItem, sortBy string) {
 			return items[i].ThroughputPerSecond > items[j].ThroughputPerSecond
 		}
 	})
+}
+
+func topErrorRouteGroup(routes map[string]model.RouteGroupMetric) model.RouteGroupMetric {
+	var top model.RouteGroupMetric
+	for _, route := range routes {
+		if route.ErrorCount > top.ErrorCount {
+			top = route
+			continue
+		}
+		if route.ErrorCount == top.ErrorCount && route.ErrorRate() > top.ErrorRate() {
+			top = route
+		}
+	}
+	return top
+}
+
+func topLatencyRouteGroup(routes map[string]model.RouteGroupMetric) model.RouteGroupMetric {
+	var top model.RouteGroupMetric
+	for _, route := range routes {
+		if route.AvgLatencyMs() > top.AvgLatencyMs() {
+			top = route
+			continue
+		}
+		if route.AvgLatencyMs() == top.AvgLatencyMs() && route.RequestCount > top.RequestCount {
+			top = route
+		}
+	}
+	return top
 }

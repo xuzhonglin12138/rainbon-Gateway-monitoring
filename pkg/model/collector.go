@@ -283,22 +283,26 @@ func NewRouteGroupItem(metric RouteGroupMetric) RouteGroupItem {
 }
 
 type AppTrafficItem struct {
-	AppID               string  `json:"app_id"`
-	TeamID              string  `json:"team_id,omitempty"`
-	TeamName            string  `json:"team_name,omitempty"`
-	TeamAlias           string  `json:"team_alias,omitempty"`
-	Namespace           string  `json:"namespace,omitempty"`
-	RegionAppID         string  `json:"region_app_id,omitempty"`
-	AppName             string  `json:"app_name,omitempty"`
-	RegionName          string  `json:"region_name,omitempty"`
-	Name                string  `json:"name"`
-	RequestCount        int64   `json:"request_count"`
-	ErrorCount          int64   `json:"error_count"`
-	ErrorRate           float64 `json:"error_rate"`
-	UpstreamErrorCount  int64   `json:"upstream_error_count"`
-	UpstreamErrorRate   float64 `json:"upstream_error_rate"`
-	AvgLatencyMs        float64 `json:"avg_latency_ms"`
-	ThroughputPerSecond float64 `json:"throughput_per_second"`
+	AppID                string  `json:"app_id"`
+	TeamID               string  `json:"team_id,omitempty"`
+	TeamName             string  `json:"team_name,omitempty"`
+	TeamAlias            string  `json:"team_alias,omitempty"`
+	Namespace            string  `json:"namespace,omitempty"`
+	RegionAppID          string  `json:"region_app_id,omitempty"`
+	AppName              string  `json:"app_name,omitempty"`
+	RegionName           string  `json:"region_name,omitempty"`
+	Name                 string  `json:"name"`
+	RequestCount         int64   `json:"request_count"`
+	ErrorCount           int64   `json:"error_count"`
+	ErrorRate            float64 `json:"error_rate"`
+	UpstreamErrorCount   int64   `json:"upstream_error_count"`
+	UpstreamErrorRate    float64 `json:"upstream_error_rate"`
+	AvgLatencyMs         float64 `json:"avg_latency_ms"`
+	ThroughputPerSecond  float64 `json:"throughput_per_second"`
+	TopErrorRouteGroup   string  `json:"top_error_route_group,omitempty"`
+	TopErrorRouteErrors  int64   `json:"top_error_route_errors,omitempty"`
+	TopLatencyRouteGroup string  `json:"top_latency_route_group,omitempty"`
+	TopLatencyRouteAvgMs float64 `json:"top_latency_route_avg_ms,omitempty"`
 }
 
 type AppComponentSummary struct {

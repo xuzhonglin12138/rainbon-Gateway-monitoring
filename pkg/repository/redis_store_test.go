@@ -256,20 +256,37 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 			"nm:platform:5m:route-group:_api_orders:bucket:1710000005",
 			"nm:platform:5m:route-group:_api_pay:bucket:1710000005",
 		},
-		hash: []interface{}{
-			"route_group", "/api/orders/*",
-			"request_count", "6",
-			"error_count", "2",
-			"latency_count", "6",
-			"latency_sum_ms", "180",
-			"team_id", "team-a",
-			"app_id", "app-a",
-			"region_app_id", "region-app-a",
-			"app_name", "订单系统",
-			"team_name", "team-a",
-			"team_alias", "研发团队",
-			"region_name", "cn-east",
-			"component_id", "svc-a",
+		hashByKey: map[string][]interface{}{
+			"nm:platform:5m:route-group:_api_orders:bucket:1710000005": {
+				"route_group", "/api/orders/*",
+				"request_count", "6",
+				"error_count", "2",
+				"latency_count", "6",
+				"latency_sum_ms", "180",
+				"team_id", "team-a",
+				"app_id", "app-a",
+				"region_app_id", "region-app-a",
+				"app_name", "订单系统",
+				"team_name", "team-a",
+				"team_alias", "研发团队",
+				"region_name", "cn-east",
+				"component_id", "svc-a",
+			},
+			"nm:platform:5m:route-group:_api_pay:bucket:1710000005": {
+				"route_group", "/api/pay/*",
+				"request_count", "4",
+				"error_count", "3",
+				"latency_count", "4",
+				"latency_sum_ms", "320",
+				"team_id", "team-a",
+				"app_id", "app-a",
+				"region_app_id", "region-app-a",
+				"app_name", "订单系统",
+				"team_name", "team-a",
+				"team_alias", "研发团队",
+				"region_name", "cn-east",
+				"component_id", "svc-a",
+			},
 		},
 	}
 	store := NewRedisStore(client)
@@ -293,17 +310,23 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 	if items[0].TeamName != "team-a" || items[0].TeamAlias != "研发团队" || items[0].RegionName != "cn-east" {
 		t.Fatalf("team display identity = %#v; want team and region display metadata", items[0])
 	}
-	if items[0].RequestCount != 12 {
-		t.Fatalf("request count = %d; want 12", items[0].RequestCount)
+	if items[0].RequestCount != 10 {
+		t.Fatalf("request count = %d; want 10", items[0].RequestCount)
 	}
-	if items[0].ErrorCount != 4 {
-		t.Fatalf("error count = %d; want 4", items[0].ErrorCount)
+	if items[0].ErrorCount != 5 {
+		t.Fatalf("error count = %d; want 5", items[0].ErrorCount)
 	}
-	if items[0].AvgLatencyMs != 30 {
-		t.Fatalf("avg latency = %v; want 30", items[0].AvgLatencyMs)
+	if items[0].AvgLatencyMs != 50 {
+		t.Fatalf("avg latency = %v; want 50", items[0].AvgLatencyMs)
 	}
-	if items[0].ThroughputPerSecond != 0.04 {
-		t.Fatalf("throughput = %v; want 0.04", items[0].ThroughputPerSecond)
+	if items[0].ThroughputPerSecond != float64(10)/model.Window5m.Duration().Seconds() {
+		t.Fatalf("throughput = %v; want %v", items[0].ThroughputPerSecond, float64(10)/model.Window5m.Duration().Seconds())
+	}
+	if items[0].TopErrorRouteGroup != "/api/pay/*" || items[0].TopErrorRouteErrors != 3 {
+		t.Fatalf("top error route = %q/%d; want /api/pay/*/3", items[0].TopErrorRouteGroup, items[0].TopErrorRouteErrors)
+	}
+	if items[0].TopLatencyRouteGroup != "/api/pay/*" || items[0].TopLatencyRouteAvgMs != 80 {
+		t.Fatalf("top latency route = %q/%v; want /api/pay/*/80", items[0].TopLatencyRouteGroup, items[0].TopLatencyRouteAvgMs)
 	}
 }
 

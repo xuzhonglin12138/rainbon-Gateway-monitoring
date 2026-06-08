@@ -163,6 +163,21 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 				continue
 			}
 			if j.MappingOnly {
+				changed, err := RemoveMatchingHTTPLoggerPlugin(route, j.Config)
+				if err != nil {
+					return fmt.Errorf("remove route-level http logger for %s/%s: %w", namespace, route.GetName(), err)
+				}
+				if changed {
+					if err := j.Client.Update(ctx, namespace, route); err != nil {
+						return fmt.Errorf("update apisix route %s/%s after removing route-level http logger: %w", namespace, route.GetName(), err)
+					}
+					if j.Logger != nil {
+						j.Logger.WithFields(logrus.Fields{
+							"namespace": namespace,
+							"route":     route.GetName(),
+						}).Info("removed route-level http-logger in mapping-only mode")
+					}
+				}
 				mappings, err := j.saveMappings(ctx, namespace, route)
 				if err != nil {
 					return err

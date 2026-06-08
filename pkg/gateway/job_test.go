@@ -260,6 +260,123 @@ func TestHTTPLoggerAttachJobReplacesAppPrometheusRoutesWithCurrentScan(t *testin
 	}
 }
 
+func TestHTTPLoggerAttachJobMappingOnlyRemovesManagedRouteLevelLogger(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name": "gr1ea4bc-8080-demo",
+			"annotations": map[string]interface{}{
+				HTTPLoggerManagedAnnotation: "true",
+			},
+			"labels": map[string]interface{}{
+				"creator":  "Rainbond",
+				"gr1ea4bc": "service_alias",
+			},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "http-a",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   HTTPLoggerPluginName,
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:         client,
+		MappingStore:   store,
+		Namespaces:     []string{"tenant-ns"},
+		AppID:          "console-app-a",
+		MappingAppID:   "console-app-a",
+		ServiceAliases: []string{"gr1ea4bc"},
+		Config:         HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+		MappingOnly:    true,
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if len(client.updated) != 1 {
+		t.Fatalf("updates = %d; want route-level logger cleanup update", len(client.updated))
+	}
+	if len(store.routeMappings) == 0 {
+		t.Fatal("no route mappings were saved")
+	}
+	annotations := client.updated[0].GetAnnotations()
+	if _, ok := annotations[HTTPLoggerManagedAnnotation]; ok {
+		t.Fatalf("managed annotation still present: %#v", annotations)
+	}
+	httpRoutes, ok, err := unstructured.NestedSlice(client.updated[0].Object, "spec", "http")
+	if err != nil || !ok {
+		t.Fatalf("read spec.http: ok=%v err=%v", ok, err)
+	}
+	if _, ok := httpRoutes[0].(map[string]interface{})["plugins"]; ok {
+		t.Fatalf("route-level plugins still present: %#v", httpRoutes[0])
+	}
+}
+
+func TestHTTPLoggerAttachJobMappingOnlyRemovesSameCollectorRouteLevelLogger(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name": "gr1ea4bc-8080-demo",
+			"labels": map[string]interface{}{
+				"creator":  "Rainbond",
+				"gr1ea4bc": "service_alias",
+			},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "http-a",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   HTTPLoggerPluginName,
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:         client,
+		MappingStore:   store,
+		Namespaces:     []string{"tenant-ns"},
+		AppID:          "console-app-a",
+		MappingAppID:   "console-app-a",
+		ServiceAliases: []string{"gr1ea4bc"},
+		Config:         HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+		MappingOnly:    true,
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if len(client.updated) != 1 {
+		t.Fatalf("updates = %d; want same collector route-level logger cleanup update", len(client.updated))
+	}
+	if len(store.routeMappings) == 0 {
+		t.Fatal("no route mappings were saved")
+	}
+	httpRoutes, ok, err := unstructured.NestedSlice(client.updated[0].Object, "spec", "http")
+	if err != nil || !ok {
+		t.Fatalf("read spec.http: ok=%v err=%v", ok, err)
+	}
+	if _, ok := httpRoutes[0].(map[string]interface{})["plugins"]; ok {
+		t.Fatalf("route-level plugins still present: %#v", httpRoutes[0])
+	}
+}
+
 func TestHTTPLoggerAttachJobClearsAppPrometheusRoutesWhenTargetAppHasNoMatches(t *testing.T) {
 	other := &unstructured.Unstructured{Object: map[string]interface{}{
 		"metadata": map[string]interface{}{

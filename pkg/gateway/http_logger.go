@@ -93,6 +93,83 @@ func EnsureHTTPLoggerPlugin(route *unstructured.Unstructured, cfg HTTPLoggerConf
 	return changed, nil
 }
 
+func RemoveManagedHTTPLoggerPlugin(route *unstructured.Unstructured) (bool, error) {
+	if route == nil {
+		return false, nil
+	}
+	annotations := route.GetAnnotations()
+	if annotations[HTTPLoggerManagedAnnotation] != "true" {
+		return false, nil
+	}
+	return removeHTTPLoggerPlugin(route, func(map[string]interface{}) bool { return true })
+}
+
+func RemoveMatchingHTTPLoggerPlugin(route *unstructured.Unstructured, cfg HTTPLoggerConfig) (bool, error) {
+	if route == nil {
+		return false, nil
+	}
+	annotations := route.GetAnnotations()
+	managed := annotations[HTTPLoggerManagedAnnotation] == "true"
+	return removeHTTPLoggerPlugin(route, func(plugin map[string]interface{}) bool {
+		if managed {
+			return true
+		}
+		return cfg.URI != "" && httpLoggerPluginURI(plugin) == cfg.URI
+	})
+}
+
+func removeHTTPLoggerPlugin(route *unstructured.Unstructured, shouldRemove func(map[string]interface{}) bool) (bool, error) {
+	annotations := route.GetAnnotations()
+	httpRoutes, ok, err := unstructured.NestedSlice(route.Object, "spec", "http")
+	if err != nil || !ok {
+		return false, err
+	}
+
+	changed := false
+	for i, item := range httpRoutes {
+		httpRoute, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		plugins, _ := httpRoute["plugins"].([]interface{})
+		filtered := make([]interface{}, 0, len(plugins))
+		for _, pluginItem := range plugins {
+			plugin, ok := pluginItem.(map[string]interface{})
+			if ok && plugin["name"] == HTTPLoggerPluginName && shouldRemove(plugin) {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, pluginItem)
+		}
+		if len(filtered) == 0 {
+			delete(httpRoute, "plugins")
+		} else {
+			httpRoute["plugins"] = filtered
+		}
+		httpRoutes[i] = httpRoute
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := unstructured.SetNestedSlice(route.Object, httpRoutes, "spec", "http"); err != nil {
+		return false, err
+	}
+	if annotations != nil {
+		delete(annotations, HTTPLoggerManagedAnnotation)
+		route.SetAnnotations(annotations)
+	}
+	return true, nil
+}
+
+func httpLoggerPluginURI(plugin map[string]interface{}) string {
+	config, _ := plugin["config"].(map[string]interface{})
+	if config == nil {
+		return ""
+	}
+	uri, _ := config["uri"].(string)
+	return uri
+}
+
 func IsRainbondManagedRoute(route *unstructured.Unstructured) bool {
 	labels := route.GetLabels()
 	if labels["creator"] == "Rainbond" || labels["creator"] == "rainbond" {

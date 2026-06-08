@@ -144,3 +144,151 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 		t.Fatalf("bytes_sent log format = %q; want $bytes_sent", logFormat["bytes_sent"])
 	}
 }
+
+func TestRemoveManagedHTTPLoggerPluginRemovesOnlyPluginManagedByThisPlugin(t *testing.T) {
+	route := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{HTTPLoggerManagedAnnotation: "true"},
+			"labels":      map[string]interface{}{"creator": "Rainbond", "app_id": "app-a"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "r1",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   "response-rewrite",
+							"enable": true,
+						},
+						map[string]interface{}{
+							"name":   "http-logger",
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+
+	changed, err := RemoveManagedHTTPLoggerPlugin(route)
+	if err != nil {
+		t.Fatalf("RemoveManagedHTTPLoggerPlugin() unexpected error: %v", err)
+	}
+	if !changed {
+		t.Fatal("RemoveManagedHTTPLoggerPlugin() changed = false; want true")
+	}
+
+	httpRoutes, ok, err := unstructured.NestedSlice(route.Object, "spec", "http")
+	if err != nil || !ok {
+		t.Fatalf("read spec.http: ok=%v err=%v", ok, err)
+	}
+	plugins := httpRoutes[0].(map[string]interface{})["plugins"].([]interface{})
+	if len(plugins) != 1 {
+		t.Fatalf("plugins length = %d; want only non-monitor plugin left", len(plugins))
+	}
+	if plugins[0].(map[string]interface{})["name"] != "response-rewrite" {
+		t.Fatalf("remaining plugin = %#v; want response-rewrite", plugins[0])
+	}
+	annotations := route.GetAnnotations()
+	if _, ok := annotations[HTTPLoggerManagedAnnotation]; ok {
+		t.Fatalf("managed annotation still present: %#v", annotations)
+	}
+}
+
+func TestRemoveManagedHTTPLoggerPluginKeepsUnmanagedHTTPLogger(t *testing.T) {
+	route := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{"creator": "Rainbond", "app_id": "app-a"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "r1",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   "http-logger",
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://user-collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+
+	changed, err := RemoveManagedHTTPLoggerPlugin(route)
+	if err != nil {
+		t.Fatalf("RemoveManagedHTTPLoggerPlugin() unexpected error: %v", err)
+	}
+	if changed {
+		t.Fatal("RemoveManagedHTTPLoggerPlugin() changed = true; want false for unmanaged logger")
+	}
+}
+
+func TestRemoveMatchingHTTPLoggerPluginRemovesSameCollectorURIWithoutAnnotation(t *testing.T) {
+	route := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{"creator": "Rainbond", "app_id": "app-a"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "r1",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   "http-logger",
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+
+	changed, err := RemoveMatchingHTTPLoggerPlugin(route, HTTPLoggerConfig{URI: "http://collector"})
+	if err != nil {
+		t.Fatalf("RemoveMatchingHTTPLoggerPlugin() unexpected error: %v", err)
+	}
+	if !changed {
+		t.Fatal("RemoveMatchingHTTPLoggerPlugin() changed = false; want same collector logger removed")
+	}
+	httpRoutes, ok, err := unstructured.NestedSlice(route.Object, "spec", "http")
+	if err != nil || !ok {
+		t.Fatalf("read spec.http: ok=%v err=%v", ok, err)
+	}
+	if _, ok := httpRoutes[0].(map[string]interface{})["plugins"]; ok {
+		t.Fatalf("route-level plugins still present: %#v", httpRoutes[0])
+	}
+}
+
+func TestRemoveMatchingHTTPLoggerPluginKeepsDifferentCollectorURI(t *testing.T) {
+	route := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{"creator": "Rainbond", "app_id": "app-a"},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "r1",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   "http-logger",
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://user-collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+
+	changed, err := RemoveMatchingHTTPLoggerPlugin(route, HTTPLoggerConfig{URI: "http://collector"})
+	if err != nil {
+		t.Fatalf("RemoveMatchingHTTPLoggerPlugin() unexpected error: %v", err)
+	}
+	if changed {
+		t.Fatal("RemoveMatchingHTTPLoggerPlugin() changed = true; want user collector logger kept")
+	}
+}

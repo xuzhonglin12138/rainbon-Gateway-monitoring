@@ -25,6 +25,11 @@ type RedisStore struct {
 	now    func() time.Time
 }
 
+type routeGroupBucketMetric struct {
+	timestamp int64
+	metric    model.RouteGroupMetric
+}
+
 func NewRedisStore(client CommandClient) *RedisStore {
 	return &RedisStore{
 		client: client,
@@ -195,13 +200,21 @@ func (s *RedisStore) ListRouteGroupBucketPoints(ctx context.Context, scope model
 }
 
 func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
+	metrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+	if err != nil {
+		return nil, err
+	}
+	return aggregateRouteGroupBucketPoints(metrics), nil
+}
+
+func (s *RedisStore) listRouteGroupBucketMetricsForScope(ctx context.Context, scope model.AggregateScope, window model.Window) ([]routeGroupBucketMetric, error) {
 	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
 	if err != nil {
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
 	now := s.now()
-	pointsByBucket := make(map[int64]model.RouteGroupMetric)
+	metrics := make([]routeGroupBucketMetric, 0, len(keys))
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
 		if !ok || !bucketInWindow(bucketUnix, now, window) {
@@ -215,14 +228,36 @@ func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, sco
 		if metric.RouteGroup == "" {
 			continue
 		}
-		current := pointsByBucket[bucketUnix]
-		current.RequestCount += metric.RequestCount
-		current.ErrorCount += metric.ErrorCount
-		current.UpstreamErrorCount += metric.UpstreamErrorCount
-		current.LatencySumMs += metric.LatencySumMs
-		current.LatencyCount += metric.LatencyCount
-		current.EgressBytes += metric.EgressBytes
-		pointsByBucket[bucketUnix] = current
+		metrics = append(metrics, routeGroupBucketMetric{
+			timestamp: bucketUnix,
+			metric:    metric,
+		})
+	}
+	return metrics, nil
+}
+
+func (s *RedisStore) listRouteGroupBucketPointsForApp(ctx context.Context, appID string, window model.Window) ([]model.RouteGroupBucketPoint, error) {
+	scopes, err := s.appScopes(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	metrics := make([]routeGroupBucketMetric, 0)
+	for _, scope := range scopes {
+		scopeMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, scopeMetrics...)
+	}
+	return aggregateRouteGroupBucketPoints(dedupeRouteGroupBucketMetrics(metrics)), nil
+}
+
+func aggregateRouteGroupBucketPoints(bucketMetrics []routeGroupBucketMetric) []model.RouteGroupBucketPoint {
+	pointsByBucket := make(map[int64]model.RouteGroupMetric)
+	for _, bucketMetric := range bucketMetrics {
+		current := pointsByBucket[bucketMetric.timestamp]
+		mergeRouteGroupMetric(&current, bucketMetric.metric)
+		pointsByBucket[bucketMetric.timestamp] = current
 	}
 	timestamps := make([]int64, 0, len(pointsByBucket))
 	for timestamp := range pointsByBucket {
@@ -236,41 +271,41 @@ func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, sco
 			Metric:    pointsByBucket[timestamp],
 		})
 	}
-	return points, nil
+	return points
 }
 
-func (s *RedisStore) listRouteGroupBucketPointsForApp(ctx context.Context, appID string, window model.Window) ([]model.RouteGroupBucketPoint, error) {
-	scopes, err := s.appScopes(ctx, appID)
-	if err != nil {
-		return nil, err
-	}
-	pointsByBucket := make(map[int64]model.RouteGroupMetric)
-	for _, scope := range scopes {
-		points, err := s.listRouteGroupBucketPointsForScope(ctx, scope, window)
-		if err != nil {
-			return nil, err
+func aggregateRouteGroupMetrics(bucketMetrics []routeGroupBucketMetric) map[string]model.RouteGroupMetric {
+	metrics := make(map[string]model.RouteGroupMetric)
+	for _, bucketMetric := range bucketMetrics {
+		metric := bucketMetric.metric
+		if metric.RouteGroup == "" {
+			continue
 		}
-		for _, point := range points {
-			current := pointsByBucket[point.Timestamp]
-			current.RequestCount += point.Metric.RequestCount
-			current.ErrorCount += point.Metric.ErrorCount
-			current.UpstreamErrorCount += point.Metric.UpstreamErrorCount
-			current.LatencySumMs += point.Metric.LatencySumMs
-			current.LatencyCount += point.Metric.LatencyCount
-			current.EgressBytes += point.Metric.EgressBytes
-			pointsByBucket[point.Timestamp] = current
+		current := metrics[metric.RouteGroup]
+		mergeRouteGroupMetric(&current, metric)
+		current.RouteGroup = metric.RouteGroup
+		metrics[metric.RouteGroup] = current
+	}
+	return metrics
+}
+
+func dedupeRouteGroupBucketMetrics(bucketMetrics []routeGroupBucketMetric) []routeGroupBucketMetric {
+	byBucketAndRoute := make(map[string]routeGroupBucketMetric)
+	for _, bucketMetric := range bucketMetrics {
+		if bucketMetric.metric.RouteGroup == "" {
+			continue
+		}
+		key := fmt.Sprintf("%d\x00%s", bucketMetric.timestamp, bucketMetric.metric.RouteGroup)
+		current, ok := byBucketAndRoute[key]
+		if !ok || bucketMetric.metric.RequestCount > current.metric.RequestCount {
+			byBucketAndRoute[key] = bucketMetric
 		}
 	}
-	timestamps := make([]int64, 0, len(pointsByBucket))
-	for timestamp := range pointsByBucket {
-		timestamps = append(timestamps, timestamp)
+	deduped := make([]routeGroupBucketMetric, 0, len(byBucketAndRoute))
+	for _, bucketMetric := range byBucketAndRoute {
+		deduped = append(deduped, bucketMetric)
 	}
-	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i] < timestamps[j] })
-	points := make([]model.RouteGroupBucketPoint, 0, len(timestamps))
-	for _, timestamp := range timestamps {
-		points = append(points, model.RouteGroupBucketPoint{Timestamp: timestamp, Metric: pointsByBucket[timestamp]})
-	}
-	return points, nil
+	return deduped
 }
 
 func (s *RedisStore) RefreshRouteGroupSnapshots(ctx context.Context) error {
@@ -307,45 +342,11 @@ func (s *RedisStore) RefreshRouteGroupSnapshots(ctx context.Context) error {
 }
 
 func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error) {
-	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	bucketMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
 	if err != nil {
 		return nil, err
 	}
-	keys := stringSlice(keysValue)
-	now := s.now()
-	metrics := make(map[string]model.RouteGroupMetric)
-	for _, key := range keys {
-		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || !bucketInWindow(bucketUnix, now, window) {
-			continue
-		}
-		values, err := s.client.Do(ctx, "HGETALL", key)
-		if err != nil {
-			return nil, err
-		}
-		metric := metricFromHash(values)
-		if metric.RouteGroup == "" {
-			continue
-		}
-		current := metrics[metric.RouteGroup]
-		current.RouteGroup = metric.RouteGroup
-		current.RequestCount += metric.RequestCount
-		current.ErrorCount += metric.ErrorCount
-		current.UpstreamErrorCount += metric.UpstreamErrorCount
-		current.LatencySumMs += metric.LatencySumMs
-		current.LatencyCount += metric.LatencyCount
-		current.EgressBytes += metric.EgressBytes
-		current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
-		current.AppID = firstNonEmpty(current.AppID, metric.AppID)
-		current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
-		current.TeamAlias = firstNonEmpty(current.TeamAlias, metric.TeamAlias)
-		current.Namespace = firstNonEmpty(current.Namespace, metric.Namespace)
-		current.RegionAppID = firstNonEmpty(current.RegionAppID, metric.RegionAppID)
-		current.AppName = firstNonEmpty(current.AppName, metric.AppName)
-		current.RegionName = firstNonEmpty(current.RegionName, metric.RegionName)
-		current.ComponentID = firstNonEmpty(current.ComponentID, metric.ComponentID)
-		metrics[metric.RouteGroup] = current
-	}
+	metrics := aggregateRouteGroupMetrics(bucketMetrics)
 
 	items := make([]model.RouteGroupItem, 0, len(metrics))
 	for _, metric := range metrics {
@@ -364,32 +365,21 @@ func (s *RedisStore) aggregateRouteGroupsForApp(ctx context.Context, appID strin
 		return nil, err
 	}
 	metrics := make(map[string]model.RouteGroupMetric)
+	bucketMetrics := make([]routeGroupBucketMetric, 0)
 	for _, scope := range scopes {
-		items, err := s.aggregateRouteGroups(ctx, scope, window, 10000, sortBy)
+		scopeMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range items {
-			current := metrics[item.RouteGroup]
-			current.RouteGroup = item.RouteGroup
-			current.RequestCount += item.RequestCount
-			current.ErrorCount += item.ErrorCount
-			current.UpstreamErrorCount += item.UpstreamErrorCount
-			current.LatencySumMs += item.AvgLatencyMs * float64(item.RequestCount)
-			current.LatencyCount += item.RequestCount
-			current.EgressBytes += item.EgressBytes
-			current.AppID = firstNonEmpty(current.AppID, appID, item.AppID)
-			current.TeamID = firstNonEmpty(current.TeamID, item.TeamID)
-			current.TeamName = firstNonEmpty(current.TeamName, item.TeamName)
-			current.TeamAlias = firstNonEmpty(current.TeamAlias, item.TeamAlias)
-			current.Namespace = firstNonEmpty(current.Namespace, item.Namespace)
-			current.RegionAppID = firstNonEmpty(current.RegionAppID, item.RegionAppID, alternateRegionAppIDFromItem(item, appID))
-			current.AppName = firstNonEmpty(current.AppName, item.AppName)
-			current.RegionName = firstNonEmpty(current.RegionName, item.RegionName)
-			current.ComponentID = firstNonEmpty(current.ComponentID, item.ComponentID)
-			current.ServiceAlias = firstNonEmpty(current.ServiceAlias, item.ServiceAlias)
-			metrics[item.RouteGroup] = current
+		bucketMetrics = append(bucketMetrics, scopeMetrics...)
+	}
+	metrics = aggregateRouteGroupMetrics(dedupeRouteGroupBucketMetrics(bucketMetrics))
+	for routeGroup, metric := range metrics {
+		metric.AppID = firstNonEmpty(appID, metric.AppID)
+		if metric.RegionAppID == "" && metric.AppID != "" && metric.AppID != appID {
+			metric.RegionAppID = metric.AppID
 		}
+		metrics[routeGroup] = metric
 	}
 	items := make([]model.RouteGroupItem, 0, len(metrics))
 	for _, metric := range metrics {

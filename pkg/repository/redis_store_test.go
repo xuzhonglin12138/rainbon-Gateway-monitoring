@@ -9,14 +9,14 @@ import (
 )
 
 type fakeRedisClient struct {
-	calls     [][]string
-	keys      []interface{}
+	calls         [][]string
+	keys          []interface{}
 	keysByPattern map[string][]interface{}
-	hash      []interface{}
-	hashByKey map[string][]interface{}
-	get       interface{}
-	members   []interface{}
-	sets      map[string]interface{}
+	hash          []interface{}
+	hashByKey     map[string][]interface{}
+	get           interface{}
+	members       []interface{}
+	sets          map[string]interface{}
 }
 
 func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, error) {
@@ -540,11 +540,11 @@ func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T)
 				"nm:app:1023:5m:route-group:_api_pay:bucket:1710000005",
 			},
 			"nm:app:region-app-a:5m:route-group:*:bucket:*": []interface{}{
-				"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005",
+				"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000010",
 			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005": {
+			"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000010": {
 				"route_group", "/api/pay/*",
 				"request_count", "5",
 				"error_count", "2",
@@ -583,6 +583,56 @@ func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T)
 	}
 	if items[0].AvgLatencyMs != 38.75 {
 		t.Fatalf("avg latency = %v; want 38.75", items[0].AvgLatencyMs)
+	}
+}
+
+func TestRedisStoreListRouteGroupsForAppDeduplicatesCanonicalAliasBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		keysByPattern: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:*:bucket:*": {
+				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
+			},
+			"nm:app:region-app-a:5m:route-group:*:bucket:*": {
+				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "50",
+				"latency_count", "50",
+				"latency_sum_ms", "500",
+				"app_id", "1023",
+				"region_app_id", "region-app-a",
+			},
+			"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "50",
+				"latency_count", "50",
+				"latency_sum_ms", "500",
+				"app_id", "region-app-a",
+				"region_app_id", "region-app-a",
+			},
+		},
+		sets: map[string]interface{}{
+			appAliasesKey("1023"):           []interface{}{"region-app-a"},
+			appCanonicalKey("region-app-a"): "1023",
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListRouteGroups(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "1023"}, model.Window5m, 50, "requests")
+	if err != nil {
+		t.Fatalf("ListRouteGroups() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].RequestCount != 50 {
+		t.Fatalf("request count = %d; want canonical alias duplicate counted once", items[0].RequestCount)
 	}
 }
 
@@ -692,6 +742,56 @@ func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 	}
 	if points[1].Metric.EgressBytes != 800 {
 		t.Fatalf("second egress bytes = %d; want 800", points[1].Metric.EgressBytes)
+	}
+}
+
+func TestRedisStoreListRouteGroupBucketPointsForAppDeduplicatesCanonicalAliasScopes(t *testing.T) {
+	client := &fakeRedisClient{
+		keysByPattern: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:*:bucket:*": {
+				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
+			},
+			"nm:app:region-app-a:5m:route-group:*:bucket:*": {
+				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "50",
+				"latency_count", "50",
+				"latency_sum_ms", "500",
+				"app_id", "1023",
+				"region_app_id", "region-app-a",
+			},
+			"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "50",
+				"latency_count", "50",
+				"latency_sum_ms", "500",
+				"app_id", "region-app-a",
+				"region_app_id", "region-app-a",
+			},
+		},
+		sets: map[string]interface{}{
+			appAliasesKey("1023"):           []interface{}{"region-app-a"},
+			appCanonicalKey("region-app-a"): "1023",
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	points, err := store.ListRouteGroupBucketPoints(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "1023"}, model.Window5m)
+	if err != nil {
+		t.Fatalf("ListRouteGroupBucketPoints() unexpected error: %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("points length = %d; want 1", len(points))
+	}
+	if points[0].Metric.RequestCount != 50 {
+		t.Fatalf("request count = %d; want canonical alias duplicate counted once", points[0].Metric.RequestCount)
 	}
 }
 

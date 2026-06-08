@@ -12,8 +12,9 @@ import (
 )
 
 type fakeRouteClient struct {
-	routes  []*unstructured.Unstructured
-	updated []*unstructured.Unstructured
+	routes            []*unstructured.Unstructured
+	updated           []*unstructured.Unstructured
+	updatedNamespaces []string
 }
 
 type fakeRouteMappingStore struct {
@@ -28,8 +29,9 @@ func (f *fakeRouteClient) List(_ context.Context, _ string) ([]*unstructured.Uns
 	return f.routes, nil
 }
 
-func (f *fakeRouteClient) Update(_ context.Context, _ string, route *unstructured.Unstructured) error {
+func (f *fakeRouteClient) Update(_ context.Context, namespace string, route *unstructured.Unstructured) error {
 	f.updated = append(f.updated, route)
+	f.updatedNamespaces = append(f.updatedNamespaces, namespace)
 	return nil
 }
 
@@ -374,6 +376,58 @@ func TestHTTPLoggerAttachJobMappingOnlyRemovesSameCollectorRouteLevelLogger(t *t
 	}
 	if _, ok := httpRoutes[0].(map[string]interface{})["plugins"]; ok {
 		t.Fatalf("route-level plugins still present: %#v", httpRoutes[0])
+	}
+}
+
+func TestHTTPLoggerAttachJobMappingOnlyUsesRouteNamespaceForClusterWideCleanup(t *testing.T) {
+	matching := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name":      "gr1ea4bc-8080-demo",
+			"namespace": "tenant-ns",
+			"labels": map[string]interface{}{
+				"creator":  "Rainbond",
+				"gr1ea4bc": "service_alias",
+			},
+		},
+		"spec": map[string]interface{}{
+			"http": []interface{}{
+				map[string]interface{}{
+					"name": "http-a",
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name":   HTTPLoggerPluginName,
+							"enable": true,
+							"config": map[string]interface{}{"uri": "http://collector"},
+						},
+					},
+				},
+			},
+		},
+	}}
+	client := &fakeRouteClient{routes: []*unstructured.Unstructured{matching}}
+	store := &fakeRouteMappingStore{}
+	job := HTTPLoggerAttachJob{
+		Client:       client,
+		MappingStore: store,
+		Namespaces:   []string{""},
+		Config:       HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+		MappingOnly:  true,
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if len(client.updatedNamespaces) != 1 {
+		t.Fatalf("updated namespaces = %#v; want one cleanup update", client.updatedNamespaces)
+	}
+	if client.updatedNamespaces[0] != "tenant-ns" {
+		t.Fatalf("updated namespace = %q; want route namespace tenant-ns", client.updatedNamespaces[0])
+	}
+	if len(store.routeMappings) == 0 {
+		t.Fatal("no route mappings were saved")
+	}
+	if store.routeMappings[0].Namespace != "tenant-ns" {
+		t.Fatalf("mapping namespace = %q; want tenant-ns", store.routeMappings[0].Namespace)
 	}
 }
 

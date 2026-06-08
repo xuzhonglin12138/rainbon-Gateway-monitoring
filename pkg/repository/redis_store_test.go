@@ -533,6 +533,59 @@ func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testin
 	}
 }
 
+func TestRedisStoreListAppsDeduplicatesCanonicalAliasBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		keysByPattern: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:*:bucket:*": {
+				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
+			},
+			"nm:app:region-app-a:5m:route-group:*:bucket:*": {
+				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "50",
+				"latency_count", "50",
+				"latency_sum_ms", "500",
+				"app_id", "1023",
+				"region_app_id", "region-app-a",
+				"team_id", "team-a",
+			},
+			"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "50",
+				"latency_count", "50",
+				"latency_sum_ms", "500",
+				"app_id", "region-app-a",
+				"region_app_id", "region-app-a",
+				"team_id", "team-a",
+			},
+		},
+		sets: map[string]interface{}{
+			scopeRegistryKey:                []interface{}{"app:1023", "app:region-app-a"},
+			appAliasesKey("1023"):           []interface{}{"region-app-a"},
+			appCanonicalKey("region-app-a"): "1023",
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].AppID != "1023" || items[0].RequestCount != 50 {
+		t.Fatalf("item = %#v; want canonical app counted once", items[0])
+	}
+}
+
 func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		keysByPattern: map[string][]interface{}{

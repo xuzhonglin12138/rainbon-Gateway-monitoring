@@ -454,28 +454,41 @@ func (s *RedisStore) aggregateAppMetricsForApp(ctx context.Context, appID string
 	if err != nil {
 		return nil, nil, err
 	}
-	metrics := make(map[string]model.RouteGroupMetric)
-	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
+	bucketMetrics := make([]routeGroupBucketMetric, 0)
 	for _, scope := range scopes {
-		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsFromScope(ctx, scope, window)
+		scopeMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
 		if err != nil {
 			return nil, nil, err
 		}
-		for metricAppID, metric := range appMetrics {
-			current := metrics[metricAppID]
-			mergeRouteGroupMetric(&current, metric)
-			current.AppID = firstNonEmpty(current.AppID, metricAppID, metric.AppID)
-			metrics[metricAppID] = current
-			if routeMetrics[metricAppID] == nil {
-				routeMetrics[metricAppID] = make(map[string]model.RouteGroupMetric)
-			}
-			for routeGroup, routeMetric := range appRouteMetrics[metricAppID] {
-				currentRoute := routeMetrics[metricAppID][routeGroup]
-				mergeRouteGroupMetric(&currentRoute, routeMetric)
-				currentRoute.RouteGroup = firstNonEmpty(currentRoute.RouteGroup, routeGroup, routeMetric.RouteGroup)
-				routeMetrics[metricAppID][routeGroup] = currentRoute
-			}
+		bucketMetrics = append(bucketMetrics, scopeMetrics...)
+	}
+	bucketMetrics = dedupeRouteGroupBucketMetrics(bucketMetrics)
+	metrics := make(map[string]model.RouteGroupMetric)
+	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
+	for _, bucketMetric := range bucketMetrics {
+		metric := bucketMetric.metric
+		if metric.AppID == "" || metric.AppID == "unknown_app" {
+			continue
 		}
+		metricAppID, err := s.canonicalAppID(ctx, metric)
+		if err != nil {
+			return nil, nil, err
+		}
+		current := metrics[metricAppID]
+		mergeRouteGroupMetric(&current, metric)
+		current.AppID = firstNonEmpty(current.AppID, metricAppID, metric.AppID)
+		current.RegionAppID = firstNonEmpty(current.RegionAppID, metric.RegionAppID, alternateRegionAppID(metric, metricAppID))
+		metrics[metricAppID] = current
+		if metric.RouteGroup == "" {
+			continue
+		}
+		if routeMetrics[metricAppID] == nil {
+			routeMetrics[metricAppID] = make(map[string]model.RouteGroupMetric)
+		}
+		currentRoute := routeMetrics[metricAppID][metric.RouteGroup]
+		mergeRouteGroupMetric(&currentRoute, metric)
+		currentRoute.RouteGroup = metric.RouteGroup
+		routeMetrics[metricAppID][metric.RouteGroup] = currentRoute
 	}
 	return metrics, routeMetrics, nil
 }

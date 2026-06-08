@@ -139,12 +139,16 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 			}).Info("scanned apisix routes for http-logger")
 		}
 		for _, route := range routes {
+			routeNamespace := namespace
+			if route != nil && route.GetNamespace() != "" {
+				routeNamespace = route.GetNamespace()
+			}
 			managed := IsRainbondManagedRoute(route)
 			routeMatch := j.matchRoute(route)
 			if j.Logger != nil && route != nil {
 				labels := route.GetLabels()
 				j.Logger.WithFields(logrus.Fields{
-					"namespace":           namespace,
+					"namespace":           routeNamespace,
 					"route":               route.GetName(),
 					"label_app_id":        labels["app_id"],
 					"label_creator":       labels["creator"],
@@ -165,20 +169,20 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 			if j.MappingOnly {
 				changed, err := RemoveMatchingHTTPLoggerPlugin(route, j.Config)
 				if err != nil {
-					return fmt.Errorf("remove route-level http logger for %s/%s: %w", namespace, route.GetName(), err)
+					return fmt.Errorf("remove route-level http logger for %s/%s: %w", routeNamespace, route.GetName(), err)
 				}
 				if changed {
-					if err := j.Client.Update(ctx, namespace, route); err != nil {
-						return fmt.Errorf("update apisix route %s/%s after removing route-level http logger: %w", namespace, route.GetName(), err)
+					if err := j.Client.Update(ctx, routeNamespace, route); err != nil {
+						return fmt.Errorf("update apisix route %s/%s after removing route-level http logger: %w", routeNamespace, route.GetName(), err)
 					}
 					if j.Logger != nil {
 						j.Logger.WithFields(logrus.Fields{
-							"namespace": namespace,
+							"namespace": routeNamespace,
 							"route":     route.GetName(),
 						}).Info("removed route-level http-logger in mapping-only mode")
 					}
 				}
-				mappings, err := j.saveMappings(ctx, namespace, route)
+				mappings, err := j.saveMappings(ctx, routeNamespace, route)
 				if err != nil {
 					return err
 				}
@@ -187,11 +191,11 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 			}
 			changed, err := EnsureHTTPLoggerPlugin(route, j.Config)
 			if err != nil {
-				return fmt.Errorf("ensure http logger for %s/%s: %w", namespace, route.GetName(), err)
+				return fmt.Errorf("ensure http logger for %s/%s: %w", routeNamespace, route.GetName(), err)
 			}
 			if j.Logger != nil {
 				j.Logger.WithFields(logrus.Fields{
-					"namespace":              namespace,
+					"namespace":              routeNamespace,
 					"route":                  route.GetName(),
 					"changed":                changed,
 					"collector_uri":          j.Config.URI,
@@ -201,24 +205,24 @@ func (j *HTTPLoggerAttachJob) RunOnce(ctx context.Context) error {
 				}).Info("ensured route-level http-logger")
 			}
 			if !changed {
-				mappings, err := j.saveMappings(ctx, namespace, route)
+				mappings, err := j.saveMappings(ctx, routeNamespace, route)
 				if err != nil {
 					return err
 				}
 				rememberAppPrometheusRoutes(appRoutes, appRouteSeen, mappings)
 				continue
 			}
-			if err := j.Client.Update(ctx, namespace, route); err != nil {
-				return fmt.Errorf("update apisix route %s/%s: %w", namespace, route.GetName(), err)
+			if err := j.Client.Update(ctx, routeNamespace, route); err != nil {
+				return fmt.Errorf("update apisix route %s/%s: %w", routeNamespace, route.GetName(), err)
 			}
-			mappings, err := j.saveMappings(ctx, namespace, route)
+			mappings, err := j.saveMappings(ctx, routeNamespace, route)
 			if err != nil {
 				return err
 			}
 			rememberAppPrometheusRoutes(appRoutes, appRouteSeen, mappings)
 			if j.Logger != nil {
 				j.Logger.WithFields(logrus.Fields{
-					"namespace":     namespace,
+					"namespace":     routeNamespace,
 					"route":         route.GetName(),
 					"collector_uri": j.Config.URI,
 				}).Info("attached route-level http-logger")

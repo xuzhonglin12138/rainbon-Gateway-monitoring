@@ -79,7 +79,12 @@ func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
 			},
 		},
 	}
-	service := NewOverviewService(OverviewConfig{RouteGroupStore: store})
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now: func() time.Time {
+			return time.Unix(1010, 0)
+		},
+	})
 
 	overview, err := service.GetPlatformOverview(context.Background(), model.Window5m)
 	if err != nil {
@@ -99,6 +104,71 @@ func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
 	}
 	if overview.EgressBytesPerSec != 30 {
 		t.Fatalf("egress = %v; want 30", overview.EgressBytesPerSec)
+	}
+	if overview.RealtimeRequestPerSecond != 2 {
+		t.Fatalf("realtime request per second = %v; want 2", overview.RealtimeRequestPerSecond)
+	}
+	if overview.RealtimeErrorRate != 0.2 {
+		t.Fatalf("realtime error rate = %v; want 0.2", overview.RealtimeErrorRate)
+	}
+	if overview.RealtimeAvgLatencyMs != 100 {
+		t.Fatalf("realtime latency = %v; want 100", overview.RealtimeAvgLatencyMs)
+	}
+	if overview.RealtimeEgressBytesPerSec != 1200 {
+		t.Fatalf("realtime egress = %v; want 1200", overview.RealtimeEgressBytesPerSec)
+	}
+}
+
+func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1005,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 10,
+					ErrorCount:   1,
+					LatencySumMs: 500,
+					LatencyCount: 10,
+					EgressBytes:  1000,
+				},
+			},
+			{
+				Timestamp: 1010,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 20,
+					ErrorCount:   4,
+					LatencySumMs: 2000,
+					LatencyCount: 20,
+					EgressBytes:  5000,
+				},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now: func() time.Time {
+			return time.Unix(1011, 0)
+		},
+	})
+
+	overview, err := service.GetAppOverview(context.Background(), "app-a", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetAppOverview() unexpected error: %v", err)
+	}
+	if overview.RequestCount != 30 {
+		t.Fatalf("request count = %v; want 30", overview.RequestCount)
+	}
+	if overview.RealtimeRequestPerSecond != 4 {
+		t.Fatalf("realtime request per second = %v; want 4", overview.RealtimeRequestPerSecond)
+	}
+	if overview.RealtimeErrorRate != 0.2 {
+		t.Fatalf("realtime error rate = %v; want 0.2", overview.RealtimeErrorRate)
+	}
+	if overview.RealtimeAvgLatencyMs != 100 {
+		t.Fatalf("realtime latency = %v; want 100", overview.RealtimeAvgLatencyMs)
+	}
+	if overview.RealtimeEgressBytesPerSec != 1000 {
+		t.Fatalf("realtime egress = %v; want 1000", overview.RealtimeEgressBytesPerSec)
 	}
 }
 
@@ -327,6 +397,42 @@ func TestOverviewServiceGetsComponentOverview(t *testing.T) {
 	}
 	if overview.EgressBytesPerSec != 2048 {
 		t.Fatalf("egress = %v; want 2048", overview.EgressBytesPerSec)
+	}
+}
+
+func TestOverviewServiceGetsComponentTrendUsesTransmitAsEgress(t *testing.T) {
+	client := &fakePrometheusClient{
+		ranges: map[string][]promclient.RangeSample{
+			`sum(rate(app_request{service_id="svc-a",method="total"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 12}}},
+			},
+			`avg(app_requesttime{service_id="svc-a",mode="avg"})`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 86}}},
+			},
+			`sum(rate(container_network_receive_bytes_total{service_id="svc-a"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 1024}}},
+			},
+			`sum(rate(container_network_transmit_bytes_total{service_id="svc-a"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 100, Value: 2048}}},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		Prometheus: client,
+		Now: func() time.Time {
+			return time.Unix(400, 0)
+		},
+	})
+
+	trend, err := service.GetComponentRealtimeTrend(context.Background(), "svc-a", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetComponentRealtimeTrend() unexpected error: %v", err)
+	}
+	if len(trend.Points) != 1 {
+		t.Fatalf("points length = %d; want 1", len(trend.Points))
+	}
+	if trend.Points[0].EgressBytesPerSec != 2048 {
+		t.Fatalf("egress = %v; want transmit-only 2048", trend.Points[0].EgressBytesPerSec)
 	}
 }
 

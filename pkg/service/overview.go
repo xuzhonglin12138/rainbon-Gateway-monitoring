@@ -124,15 +124,18 @@ func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID 
 		return model.Overview{}, err
 	}
 	return model.Overview{
-		Scope:               model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
-		Window:              window,
-		RequestCount:        requests,
-		EgressBytesPerSec:   transmit,
-		ThroughputPerSecond: throughput,
-		AvgLatencyMs:        latency,
-		NetworkReceiveBps:   receive,
-		NetworkTransmitBps:  transmit,
-		EvidenceLevel:       "A",
+		Scope:                     model.AggregateScope{Kind: model.ScopeComponent, ID: componentID},
+		Window:                    window,
+		RequestCount:              requests,
+		EgressBytesPerSec:         transmit,
+		ThroughputPerSecond:       throughput,
+		AvgLatencyMs:              latency,
+		NetworkReceiveBps:         receive,
+		NetworkTransmitBps:        transmit,
+		RealtimeRequestPerSecond:  throughput,
+		RealtimeEgressBytesPerSec: transmit,
+		RealtimeAvgLatencyMs:      latency,
+		EvidenceLevel:             "A",
 	}, nil
 }
 
@@ -147,7 +150,7 @@ func (s *OverviewService) realtimeBucketOverview(ctx context.Context, scope mode
 	if len(buckets) == 0 {
 		return model.Overview{}, false, nil
 	}
-	return overviewFromRouteMetrics(scope, window, routeMetricsFromBuckets(buckets)), true, nil
+	return overviewFromRouteBuckets(scope, window, buckets, s.now()), true, nil
 }
 
 func overviewFromRouteGroups(componentID string, window model.Window, items []model.RouteGroupItem) model.Overview {
@@ -171,6 +174,46 @@ func routeMetricsFromBuckets(buckets []model.RouteGroupBucketPoint) []model.Rout
 		metrics = append(metrics, bucket.Metric)
 	}
 	return metrics
+}
+
+func overviewFromRouteBuckets(scope model.AggregateScope, window model.Window, buckets []model.RouteGroupBucketPoint, now time.Time) model.Overview {
+	overview := overviewFromRouteMetrics(scope, window, routeMetricsFromBuckets(buckets))
+	realtimeMetric := realtimeMetricFromBuckets(buckets, now)
+	bucketSeconds := model.BucketSize.Seconds()
+	if bucketSeconds <= 0 {
+		bucketSeconds = 1
+	}
+	overview.RealtimeRequestPerSecond = float64(realtimeMetric.RequestCount) / bucketSeconds
+	overview.RealtimeErrorRate = realtimeMetric.ErrorRate()
+	overview.RealtimeAvgLatencyMs = realtimeMetric.AvgLatencyMs()
+	overview.RealtimeEgressBytesPerSec = float64(realtimeMetric.EgressBytes) / bucketSeconds
+	return overview
+}
+
+func realtimeMetricFromBuckets(buckets []model.RouteGroupBucketPoint, now time.Time) model.RouteGroupMetric {
+	metricsByTimestamp := bucketMetricsByTimestamp(buckets)
+	if metric, ok := metricsByTimestamp[model.AlignBucket(now)]; ok {
+		return metric
+	}
+	if metric, ok := metricsByTimestamp[closedTrendBucket(now)]; ok {
+		return metric
+	}
+	return model.RouteGroupMetric{}
+}
+
+func bucketMetricsByTimestamp(buckets []model.RouteGroupBucketPoint) map[int64]model.RouteGroupMetric {
+	metricsByTimestamp := make(map[int64]model.RouteGroupMetric, len(buckets))
+	for _, bucket := range buckets {
+		current := metricsByTimestamp[bucket.Timestamp]
+		current.RequestCount += bucket.Metric.RequestCount
+		current.ErrorCount += bucket.Metric.ErrorCount
+		current.UpstreamErrorCount += bucket.Metric.UpstreamErrorCount
+		current.LatencySumMs += bucket.Metric.LatencySumMs
+		current.LatencyCount += bucket.Metric.LatencyCount
+		current.EgressBytes += bucket.Metric.EgressBytes
+		metricsByTimestamp[bucket.Timestamp] = current
+	}
+	return metricsByTimestamp
 }
 
 func overviewFromRouteMetrics(scope model.AggregateScope, window model.Window, metrics []model.RouteGroupMetric) model.Overview {
@@ -224,17 +267,7 @@ func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint, wind
 	if bucketSeconds <= 0 {
 		bucketSeconds = 1
 	}
-	metricsByTimestamp := make(map[int64]model.RouteGroupMetric, len(buckets))
-	for _, bucket := range buckets {
-		current := metricsByTimestamp[bucket.Timestamp]
-		current.RequestCount += bucket.Metric.RequestCount
-		current.ErrorCount += bucket.Metric.ErrorCount
-		current.UpstreamErrorCount += bucket.Metric.UpstreamErrorCount
-		current.LatencySumMs += bucket.Metric.LatencySumMs
-		current.LatencyCount += bucket.Metric.LatencyCount
-		current.EgressBytes += bucket.Metric.EgressBytes
-		metricsByTimestamp[bucket.Timestamp] = current
-	}
+	metricsByTimestamp := bucketMetricsByTimestamp(buckets)
 	latestBucket := closedTrendBucket(now)
 	startBucket := latestBucket - int64(bucketCount-1)*int64(model.BucketSize/time.Second)
 	for index := 0; index < bucketCount; index++ {
@@ -330,7 +363,7 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 			Timestamp:         timestamp,
 			RequestPerSecond:  requestValues[timestamp],
 			AvgLatencyMs:      latencyValues[timestamp],
-			EgressBytesPerSec: transmitValues[timestamp] + receiveValues[timestamp],
+			EgressBytesPerSec: transmitValues[timestamp],
 		})
 	}
 	return model.OverviewTrend{
@@ -511,15 +544,24 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	if latencyCount > 0 {
 		latency = latencySum / latencyCount
 	}
+	windowSeconds := window.Duration().Seconds()
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
 	return model.Overview{
-		Scope:             scope,
-		Window:            window,
-		RequestCount:      total,
-		ErrorCount:        errors,
-		ErrorRate:         errorRate,
-		AvgLatencyMs:      latency,
-		EgressBytesPerSec: egress,
-		EvidenceLevel:     "A",
+		Scope:                     scope,
+		Window:                    window,
+		RequestCount:              total,
+		ErrorCount:                errors,
+		ErrorRate:                 errorRate,
+		AvgLatencyMs:              latency,
+		EgressBytesPerSec:         egress,
+		ThroughputPerSecond:       total / windowSeconds,
+		RealtimeRequestPerSecond:  total / windowSeconds,
+		RealtimeEgressBytesPerSec: egress,
+		RealtimeErrorRate:         errorRate,
+		RealtimeAvgLatencyMs:      latency,
+		EvidenceLevel:             "A",
 	}, nil
 }
 

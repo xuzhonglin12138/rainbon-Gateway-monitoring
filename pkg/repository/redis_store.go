@@ -200,11 +200,11 @@ func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, sco
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	now := s.now()
 	pointsByBucket := make(map[int64]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || bucketUnix < minBucket {
+		if !ok || !bucketInWindow(bucketUnix, now, window) {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -312,11 +312,11 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	now := s.now()
 	metrics := make(map[string]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || bucketUnix < minBucket {
+		if !ok || !bucketInWindow(bucketUnix, now, window) {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -406,6 +406,9 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 	if scope.Kind == model.ScopePlatform || scope.Kind == model.ScopeTeam {
 		return s.aggregateAppMetricsFromRegisteredAppScopes(ctx, scope, window)
 	}
+	if scope.Kind == model.ScopeApp {
+		return s.aggregateAppMetricsForApp(ctx, scope.ID, window)
+	}
 	return s.aggregateAppMetricsFromScope(ctx, scope, window)
 }
 
@@ -416,17 +419,21 @@ func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopes(ctx context.Cont
 	}
 	metrics := make(map[string]model.RouteGroupMetric)
 	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
-	visitedScopes := make(map[string]struct{})
+	visitedApps := make(map[string]struct{})
 	for _, scopePart := range stringSlice(scopesValue) {
 		appScope := scopeFromRedisPart(scopePart)
 		if appScope.Kind != model.ScopeApp || appScope.ID == "" {
 			continue
 		}
-		if _, ok := visitedScopes[appScope.ID]; ok {
+		appID, err := s.canonicalAppIDForID(ctx, appScope.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, ok := visitedApps[appID]; ok {
 			continue
 		}
-		visitedScopes[appScope.ID] = struct{}{}
-		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsFromScope(ctx, appScope, window)
+		visitedApps[appID] = struct{}{}
+		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsForApp(ctx, appScope.ID, window)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -452,18 +459,49 @@ func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopes(ctx context.Cont
 	return metrics, routeMetrics, nil
 }
 
+func (s *RedisStore) aggregateAppMetricsForApp(ctx context.Context, appID string, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	scopes, err := s.appScopes(ctx, appID)
+	if err != nil {
+		return nil, nil, err
+	}
+	metrics := make(map[string]model.RouteGroupMetric)
+	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
+	for _, scope := range scopes {
+		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsFromScope(ctx, scope, window)
+		if err != nil {
+			return nil, nil, err
+		}
+		for metricAppID, metric := range appMetrics {
+			current := metrics[metricAppID]
+			mergeRouteGroupMetric(&current, metric)
+			current.AppID = firstNonEmpty(current.AppID, metricAppID, metric.AppID)
+			metrics[metricAppID] = current
+			if routeMetrics[metricAppID] == nil {
+				routeMetrics[metricAppID] = make(map[string]model.RouteGroupMetric)
+			}
+			for routeGroup, routeMetric := range appRouteMetrics[metricAppID] {
+				currentRoute := routeMetrics[metricAppID][routeGroup]
+				mergeRouteGroupMetric(&currentRoute, routeMetric)
+				currentRoute.RouteGroup = firstNonEmpty(currentRoute.RouteGroup, routeGroup, routeMetric.RouteGroup)
+				routeMetrics[metricAppID][routeGroup] = currentRoute
+			}
+		}
+	}
+	return metrics, routeMetrics, nil
+}
+
 func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
 	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
 	if err != nil {
 		return nil, nil, err
 	}
 	keys := stringSlice(keysValue)
-	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	now := s.now()
 	metrics := make(map[string]model.RouteGroupMetric)
 	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || bucketUnix < minBucket {
+		if !ok || !bucketInWindow(bucketUnix, now, window) {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -513,11 +551,11 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	minBucket := model.AlignBucket(s.now().Add(-window.Duration() + model.BucketSize))
+	now := s.now()
 	metrics := make(map[string]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || bucketUnix < minBucket {
+		if !ok || !bucketInWindow(bucketUnix, now, window) {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -822,6 +860,12 @@ func bucketUnixFromKey(key string) (int64, bool) {
 	return value, err == nil
 }
 
+func bucketInWindow(bucketUnix int64, now time.Time, window model.Window) bool {
+	minBucket := model.AlignBucket(now.Add(-window.Duration() + model.BucketSize))
+	maxBucket := model.AlignBucket(now)
+	return bucketUnix >= minBucket && bucketUnix <= maxBucket
+}
+
 func routeMappingKey(routeID string) string {
 	return "nm:route:" + sanitizeKeyPart(routeID) + ":mapping"
 }
@@ -993,14 +1037,18 @@ func (s *RedisStore) canonicalAppID(ctx context.Context, metric model.RouteGroup
 	if metric.RegionAppID != "" && metric.AppID != "" && metric.RegionAppID != metric.AppID {
 		return metric.AppID, nil
 	}
-	value, err := s.client.Do(ctx, "GET", appCanonicalKey(metric.AppID))
+	return s.canonicalAppIDForID(ctx, metric.AppID)
+}
+
+func (s *RedisStore) canonicalAppIDForID(ctx context.Context, appID string) (string, error) {
+	value, err := s.client.Do(ctx, "GET", appCanonicalKey(appID))
 	if err != nil {
 		return "", err
 	}
 	if canonical, ok := value.(string); ok && strings.TrimSpace(canonical) != "" {
 		return strings.TrimSpace(canonical), nil
 	}
-	return metric.AppID, nil
+	return appID, nil
 }
 
 func alternateRegionAppID(metric model.RouteGroupMetric, appID string) string {

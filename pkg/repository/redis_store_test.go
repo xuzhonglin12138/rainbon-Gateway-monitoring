@@ -479,6 +479,60 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 	}
 }
 
+func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		members: []interface{}{"app:app-a"},
+		keysByPattern: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:*:bucket:*": {
+				"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400",
+				"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000",
+				"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400": {
+				"route_group", "/api/old",
+				"request_count", "1000",
+				"latency_count", "1000",
+				"latency_sum_ms", "1000",
+				"app_id", "app-a",
+			},
+			"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000": {
+				"route_group", "/api/current",
+				"request_count", "200",
+				"latency_count", "200",
+				"latency_sum_ms", "2000",
+				"app_id", "app-a",
+			},
+			"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360": {
+				"route_group", "/api/future",
+				"request_count", "5000",
+				"latency_count", "5000",
+				"latency_sum_ms", "5000",
+				"app_id", "app-a",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].RequestCount != 200 {
+		t.Fatalf("request ranking count = %d; want only requests inside the selected 5m window", items[0].RequestCount)
+	}
+	if items[0].TopErrorRouteGroup == "/api/old" || items[0].TopLatencyRouteGroup == "/api/future" {
+		t.Fatalf("top routes = %#v; want out-of-window buckets excluded", items[0])
+	}
+}
+
 func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		keysByPattern: map[string][]interface{}{
@@ -529,6 +583,56 @@ func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T)
 	}
 	if items[0].AvgLatencyMs != 38.75 {
 		t.Fatalf("avg latency = %v; want 38.75", items[0].AvgLatencyMs)
+	}
+}
+
+func TestRedisStoreListRouteGroupsForAppRequestRankingUsesOnlySelectedWindowBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		keysByPattern: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:*:bucket:*": {
+				"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400",
+				"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000",
+				"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400": {
+				"route_group", "/api/old",
+				"request_count", "1000",
+				"latency_count", "1000",
+				"latency_sum_ms", "1000",
+				"app_id", "app-a",
+			},
+			"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000": {
+				"route_group", "/api/current",
+				"request_count", "200",
+				"latency_count", "200",
+				"latency_sum_ms", "2000",
+				"app_id", "app-a",
+			},
+			"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360": {
+				"route_group", "/api/future",
+				"request_count", "5000",
+				"latency_count", "5000",
+				"latency_sum_ms", "5000",
+				"app_id", "app-a",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListRouteGroups(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "app-a"}, model.Window5m, 50, "requests")
+	if err != nil {
+		t.Fatalf("ListRouteGroups() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].RouteGroup != "/api/current" || items[0].RequestCount != 200 {
+		t.Fatalf("request ranking item = %#v; want only selected-window route", items[0])
 	}
 }
 

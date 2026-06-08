@@ -172,6 +172,46 @@ func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
 	}
 }
 
+func TestOverviewServiceFallsBackToLatestBucketForRealtimeOverview(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{
+		buckets: []model.RouteGroupBucketPoint{
+			{
+				Timestamp: 1000,
+				Metric: model.RouteGroupMetric{
+					RequestCount: 25,
+					ErrorCount:   5,
+					LatencySumMs: 1250,
+					LatencyCount: 25,
+					EgressBytes:  2500,
+				},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		RouteGroupStore: store,
+		Now: func() time.Time {
+			return time.Unix(1031, 0)
+		},
+	})
+
+	overview, err := service.GetComponentOverview(context.Background(), "gr1ea4bc", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetComponentOverview() unexpected error: %v", err)
+	}
+	if overview.RealtimeRequestPerSecond != 5 {
+		t.Fatalf("realtime request per second = %v; want 5", overview.RealtimeRequestPerSecond)
+	}
+	if overview.RealtimeErrorRate != 0.2 {
+		t.Fatalf("realtime error rate = %v; want 0.2", overview.RealtimeErrorRate)
+	}
+	if overview.RealtimeAvgLatencyMs != 50 {
+		t.Fatalf("realtime latency = %v; want 50", overview.RealtimeAvgLatencyMs)
+	}
+	if overview.RealtimeEgressBytesPerSec != 500 {
+		t.Fatalf("realtime egress = %v; want 500", overview.RealtimeEgressBytesPerSec)
+	}
+}
+
 func TestOverviewServiceGetsAppOverviewWithRouteIndex(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
 		`sum(increase(apisix_http_status{route=~"route-a"}[10m]))`:                    200,

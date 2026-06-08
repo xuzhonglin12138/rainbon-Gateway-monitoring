@@ -198,6 +198,17 @@ func realtimeMetricFromBuckets(buckets []model.RouteGroupBucketPoint, now time.T
 	if metric, ok := metricsByTimestamp[closedTrendBucket(now)]; ok {
 		return metric
 	}
+	latestTimestamp := int64(0)
+	var latestMetric model.RouteGroupMetric
+	for timestamp, metric := range metricsByTimestamp {
+		if timestamp > latestTimestamp {
+			latestTimestamp = timestamp
+			latestMetric = metric
+		}
+	}
+	if latestTimestamp > 0 {
+		return latestMetric
+	}
 	return model.RouteGroupMetric{}
 }
 

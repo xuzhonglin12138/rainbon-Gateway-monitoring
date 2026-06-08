@@ -403,6 +403,56 @@ func (s *RedisStore) aggregateRouteGroupsForApp(ctx context.Context, appID strin
 }
 
 func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	if scope.Kind == model.ScopePlatform || scope.Kind == model.ScopeTeam {
+		return s.aggregateAppMetricsFromRegisteredAppScopes(ctx, scope, window)
+	}
+	return s.aggregateAppMetricsFromScope(ctx, scope, window)
+}
+
+func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopes(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	scopesValue, err := s.client.Do(ctx, "SMEMBERS", scopeRegistryKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	metrics := make(map[string]model.RouteGroupMetric)
+	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
+	visitedScopes := make(map[string]struct{})
+	for _, scopePart := range stringSlice(scopesValue) {
+		appScope := scopeFromRedisPart(scopePart)
+		if appScope.Kind != model.ScopeApp || appScope.ID == "" {
+			continue
+		}
+		if _, ok := visitedScopes[appScope.ID]; ok {
+			continue
+		}
+		visitedScopes[appScope.ID] = struct{}{}
+		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsFromScope(ctx, appScope, window)
+		if err != nil {
+			return nil, nil, err
+		}
+		for appID, metric := range appMetrics {
+			if scope.Kind == model.ScopeTeam && !appMetricBelongsToTeam(metric, scope.ID) {
+				continue
+			}
+			current := metrics[appID]
+			mergeRouteGroupMetric(&current, metric)
+			current.AppID = firstNonEmpty(current.AppID, appID, metric.AppID)
+			metrics[appID] = current
+			if routeMetrics[appID] == nil {
+				routeMetrics[appID] = make(map[string]model.RouteGroupMetric)
+			}
+			for routeGroup, routeMetric := range appRouteMetrics[appID] {
+				currentRoute := routeMetrics[appID][routeGroup]
+				mergeRouteGroupMetric(&currentRoute, routeMetric)
+				currentRoute.RouteGroup = firstNonEmpty(currentRoute.RouteGroup, routeGroup, routeMetric.RouteGroup)
+				routeMetrics[appID][routeGroup] = currentRoute
+			}
+		}
+	}
+	return metrics, routeMetrics, nil
+}
+
+func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
 	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
 	if err != nil {
 		return nil, nil, err
@@ -449,13 +499,8 @@ func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.Aggreg
 				routeMetrics[appID] = make(map[string]model.RouteGroupMetric)
 			}
 			currentRoute := routeMetrics[appID][metric.RouteGroup]
+			mergeRouteGroupMetric(&currentRoute, metric)
 			currentRoute.RouteGroup = metric.RouteGroup
-			currentRoute.RequestCount += metric.RequestCount
-			currentRoute.ErrorCount += metric.ErrorCount
-			currentRoute.UpstreamErrorCount += metric.UpstreamErrorCount
-			currentRoute.LatencySumMs += metric.LatencySumMs
-			currentRoute.LatencyCount += metric.LatencyCount
-			currentRoute.EgressBytes += metric.EgressBytes
 			routeMetrics[appID][metric.RouteGroup] = currentRoute
 		}
 	}
@@ -879,6 +924,33 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func mergeRouteGroupMetric(target *model.RouteGroupMetric, source model.RouteGroupMetric) {
+	target.RequestCount += source.RequestCount
+	target.ErrorCount += source.ErrorCount
+	target.UpstreamErrorCount += source.UpstreamErrorCount
+	target.LatencySumMs += source.LatencySumMs
+	target.LatencyCount += source.LatencyCount
+	target.EgressBytes += source.EgressBytes
+	target.TeamID = firstNonEmpty(target.TeamID, source.TeamID)
+	target.TeamName = firstNonEmpty(target.TeamName, source.TeamName)
+	target.TeamAlias = firstNonEmpty(target.TeamAlias, source.TeamAlias)
+	target.Namespace = firstNonEmpty(target.Namespace, source.Namespace)
+	target.AppID = firstNonEmpty(target.AppID, source.AppID)
+	target.RegionAppID = firstNonEmpty(target.RegionAppID, source.RegionAppID)
+	target.AppName = firstNonEmpty(target.AppName, source.AppName)
+	target.RegionName = firstNonEmpty(target.RegionName, source.RegionName)
+	target.ComponentID = firstNonEmpty(target.ComponentID, source.ComponentID)
+	target.ServiceAlias = firstNonEmpty(target.ServiceAlias, source.ServiceAlias)
+	target.RouteGroup = firstNonEmpty(target.RouteGroup, source.RouteGroup)
+}
+
+func appMetricBelongsToTeam(metric model.RouteGroupMetric, teamID string) bool {
+	if teamID == "" {
+		return true
+	}
+	return metric.TeamID == teamID || metric.TeamName == teamID || metric.Namespace == teamID
 }
 
 func (s *RedisStore) appScopes(ctx context.Context, appID string) ([]model.AggregateScope, error) {

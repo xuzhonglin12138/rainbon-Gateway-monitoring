@@ -258,13 +258,18 @@ func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 
 func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		keys: []interface{}{
-			"nm:platform:5m:route-group:_api_orders:bucket:1710000005",
-			"nm:platform:5m:route-group:_api_pay:bucket:1710000005",
-			"nm:platform:5m:route-group:_api_unmapped:bucket:1710000005",
+		members: []interface{}{"app:app-a", "app:unknown_app"},
+		keysByPattern: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005",
+				"nm:app:app-a:5m:route-group:_api_pay:bucket:1710000005",
+			},
+			"nm:app:unknown_app:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:unknown_app:5m:route-group:_api_unmapped:bucket:1710000005",
+			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:platform:5m:route-group:_api_orders:bucket:1710000005": {
+			"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005": {
 				"route_group", "/api/orders/*",
 				"request_count", "6",
 				"error_count", "2",
@@ -279,7 +284,7 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 				"region_name", "cn-east",
 				"component_id", "svc-a",
 			},
-			"nm:platform:5m:route-group:_api_pay:bucket:1710000005": {
+			"nm:app:app-a:5m:route-group:_api_pay:bucket:1710000005": {
 				"route_group", "/api/pay/*",
 				"request_count", "4",
 				"error_count", "3",
@@ -294,7 +299,7 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 				"region_name", "cn-east",
 				"component_id", "svc-a",
 			},
-			"nm:platform:5m:route-group:_api_unmapped:bucket:1710000005": {
+			"nm:app:unknown_app:5m:route-group:_api_unmapped:bucket:1710000005": {
 				"route_group", "/api/unmapped/*",
 				"request_count", "100",
 				"error_count", "50",
@@ -349,11 +354,14 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 
 func TestRedisStoreListAppsCanonicalizesRegionAppID(t *testing.T) {
 	client := &fakeRedisClient{
-		keys: []interface{}{
-			"nm:platform:5m:route-group:_api_pay:bucket:1710000005",
+		members: []interface{}{"app:region-app-a"},
+		keysByPattern: map[string][]interface{}{
+			"nm:app:region-app-a:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005",
+			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:platform:5m:route-group:_api_pay:bucket:1710000005": {
+			"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005": {
 				"route_group", "/api/pay/*",
 				"request_count", "7",
 				"latency_count", "7",
@@ -381,6 +389,93 @@ func TestRedisStoreListAppsCanonicalizesRegionAppID(t *testing.T) {
 	}
 	if items[0].AppID != "1023" || items[0].RegionAppID != "region-app-a" {
 		t.Fatalf("app ids = %#v; want console app id with region app id retained", items[0])
+	}
+}
+
+func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(t *testing.T) {
+	client := &fakeRedisClient{
+		members: []interface{}{"platform", "app:app-a", "app:app-b"},
+		keysByPattern: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:app-a:5m:route-group:_api_same:bucket:1710000005",
+			},
+			"nm:app:app-b:5m:route-group:*:bucket:*": []interface{}{
+				"nm:app:app-b:5m:route-group:_api_same:bucket:1710000005",
+			},
+			"nm:app:app-a:30m:route-group:*:bucket:*": []interface{}{
+				"nm:app:app-a:30m:route-group:_api_same:bucket:1710000005",
+			},
+			"nm:app:app-b:30m:route-group:*:bucket:*": []interface{}{
+				"nm:app:app-b:30m:route-group:_api_same:bucket:1710000005",
+			},
+			"nm:platform:5m:route-group:*:bucket:*": []interface{}{
+				"nm:platform:5m:route-group:_api_same:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:platform:5m:route-group:_api_same:bucket:1710000005": {
+				"route_group", "/api/same",
+				"request_count", "999",
+				"app_id", "app-a",
+			},
+			"nm:app:app-a:5m:route-group:_api_same:bucket:1710000005": {
+				"route_group", "/api/same",
+				"request_count", "10",
+				"latency_count", "10",
+				"latency_sum_ms", "100",
+				"app_id", "app-a",
+				"team_id", "team-a",
+			},
+			"nm:app:app-b:5m:route-group:_api_same:bucket:1710000005": {
+				"route_group", "/api/same",
+				"request_count", "20",
+				"latency_count", "20",
+				"latency_sum_ms", "400",
+				"app_id", "app-b",
+				"team_id", "team-b",
+			},
+			"nm:app:app-a:30m:route-group:_api_same:bucket:1710000005": {
+				"route_group", "/api/same",
+				"request_count", "30",
+				"latency_count", "30",
+				"latency_sum_ms", "300",
+				"app_id", "app-a",
+				"team_id", "team-a",
+			},
+			"nm:app:app-b:30m:route-group:_api_same:bucket:1710000005": {
+				"route_group", "/api/same",
+				"request_count", "40",
+				"latency_count", "40",
+				"latency_sum_ms", "800",
+				"app_id", "app-b",
+				"team_id", "team-b",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items5m, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps(5m) unexpected error: %v", err)
+	}
+	if len(items5m) != 2 {
+		t.Fatalf("5m items length = %d; want 2", len(items5m))
+	}
+	if items5m[0].AppID != "app-b" || items5m[0].RequestCount != 20 {
+		t.Fatalf("5m top item = %#v; want app-b with 20 requests from app scope", items5m[0])
+	}
+	items30m, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window30m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps(30m) unexpected error: %v", err)
+	}
+	if len(items30m) != 2 {
+		t.Fatalf("30m items length = %d; want 2", len(items30m))
+	}
+	if items30m[0].AppID != "app-b" || items30m[0].RequestCount != 40 {
+		t.Fatalf("30m top item = %#v; want app-b with 40 requests from selected window", items30m[0])
 	}
 }
 

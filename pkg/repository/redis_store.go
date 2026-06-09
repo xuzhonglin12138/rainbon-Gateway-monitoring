@@ -14,6 +14,7 @@ import (
 
 const bucketTTLSeconds = 35 * 60
 const snapshotTTLSeconds = 120
+const redisBatchHGETALLLimit = 512
 const scopeRegistryKey = "nm:route-group:scopes"
 const addRouteGroupBucketScript = `
 local bucketKey = KEYS[1]
@@ -42,6 +43,10 @@ return 1
 
 type CommandClient interface {
 	Do(ctx context.Context, args ...string) (interface{}, error)
+}
+
+type BatchCommandClient interface {
+	DoBatch(ctx context.Context, commands ...[]string) ([]interface{}, error)
 }
 
 type RedisStore struct {
@@ -174,10 +179,24 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 	if limit <= 0 {
 		limit = 50
 	}
+	if scope.Kind == model.ScopePlatform || scope.Kind == model.ScopeTeam {
+		if items, ok, err := s.readAppTrafficSnapshot(ctx, scope, window, sortBy); err != nil {
+			return nil, err
+		} else if ok {
+			if len(items) > limit {
+				items = items[:limit]
+			}
+			return items, nil
+		}
+	}
 	metrics, routeMetrics, err := s.aggregateAppMetrics(ctx, scope, window)
 	if err != nil {
 		return nil, err
 	}
+	return appTrafficItemsFromMetrics(metrics, routeMetrics, window, limit, sortBy), nil
+}
+
+func appTrafficItemsFromMetrics(metrics map[string]model.RouteGroupMetric, routeMetrics map[string]map[string]model.RouteGroupMetric, window model.Window, limit int, sortBy string) []model.AppTrafficItem {
 	items := make([]model.AppTrafficItem, 0, len(metrics))
 	windowSeconds := window.Duration().Seconds()
 	if windowSeconds <= 0 {
@@ -217,7 +236,7 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 	if len(items) > limit {
 		items = items[:limit]
 	}
-	return items, nil
+	return items
 }
 
 func (s *RedisStore) ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
@@ -242,26 +261,72 @@ func (s *RedisStore) listRouteGroupBucketMetricsForScope(ctx context.Context, sc
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	metrics := make([]routeGroupBucketMetric, 0, len(keys))
+	filteredKeys := make([]string, 0, len(keys))
+	timestampsByKey := make(map[string]int64, len(keys))
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
 		if !ok || bucketUnix < minBucket || bucketUnix > maxBucket {
 			continue
 		}
-		values, err := s.client.Do(ctx, "HGETALL", key)
-		if err != nil {
-			return nil, err
-		}
+		filteredKeys = append(filteredKeys, key)
+		timestampsByKey[key] = bucketUnix
+	}
+	valuesByKey, err := s.hgetallMany(ctx, filteredKeys)
+	if err != nil {
+		return nil, err
+	}
+	metrics := make([]routeGroupBucketMetric, 0, len(filteredKeys))
+	for _, key := range filteredKeys {
+		values := valuesByKey[key]
 		metric := metricFromHash(values)
 		if metric.RouteGroup == "" {
 			continue
 		}
 		metrics = append(metrics, routeGroupBucketMetric{
-			timestamp: bucketUnix,
+			timestamp: timestampsByKey[key],
 			metric:    metric,
 		})
 	}
 	return metrics, nil
+}
+
+func (s *RedisStore) hgetallMany(ctx context.Context, keys []string) (map[string]interface{}, error) {
+	valuesByKey := make(map[string]interface{}, len(keys))
+	if len(keys) == 0 {
+		return valuesByKey, nil
+	}
+	if batch, ok := s.client.(BatchCommandClient); ok {
+		for start := 0; start < len(keys); start += redisBatchHGETALLLimit {
+			end := start + redisBatchHGETALLLimit
+			if end > len(keys) {
+				end = len(keys)
+			}
+			batchKeys := keys[start:end]
+			commands := make([][]string, 0, len(batchKeys))
+			for _, key := range batchKeys {
+				commands = append(commands, []string{"HGETALL", key})
+			}
+			values, err := batch.DoBatch(ctx, commands...)
+			if err != nil {
+				return nil, err
+			}
+			for i, value := range values {
+				if i >= len(batchKeys) {
+					break
+				}
+				valuesByKey[batchKeys[i]] = value
+			}
+		}
+		return valuesByKey, nil
+	}
+	for _, key := range keys {
+		values, err := s.client.Do(ctx, "HGETALL", key)
+		if err != nil {
+			return nil, err
+		}
+		valuesByKey[key] = values
+	}
+	return valuesByKey, nil
 }
 
 func (s *RedisStore) listRouteGroupBucketPointsForApp(ctx context.Context, appID string, window model.Window) ([]model.RouteGroupBucketPoint, error) {
@@ -363,6 +428,18 @@ func (s *RedisStore) RefreshRouteGroupSnapshots(ctx context.Context) error {
 			}
 			if err := s.saveSnapshot(ctx, scope, window, "summary", items); err != nil {
 				return err
+			}
+			if scope.Kind == model.ScopePlatform || scope.Kind == model.ScopeTeam {
+				appMetrics, appRouteMetrics, err := s.aggregateAppMetrics(ctx, scope, window)
+				if err != nil {
+					return err
+				}
+				for _, sortBy := range []string{"errors", "latency", "throughput"} {
+					appItems := appTrafficItemsFromMetrics(appMetrics, appRouteMetrics, window, 200, sortBy)
+					if err := s.saveAppTrafficSnapshot(ctx, scope, window, sortBy, appItems); err != nil {
+						return err
+					}
+				}
 			}
 		}
 	}
@@ -528,18 +605,22 @@ func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope mod
 		return nil, nil, err
 	}
 	keys := stringSlice(keysValue)
-	metrics := make(map[string]model.RouteGroupMetric)
-	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
+	filteredKeys := make([]string, 0, len(keys))
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
 		if !ok || bucketUnix < minBucket || bucketUnix > maxBucket {
 			continue
 		}
-		values, err := s.client.Do(ctx, "HGETALL", key)
-		if err != nil {
-			return nil, nil, err
-		}
-		metric := metricFromHash(values)
+		filteredKeys = append(filteredKeys, key)
+	}
+	valuesByKey, err := s.hgetallMany(ctx, filteredKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	metrics := make(map[string]model.RouteGroupMetric)
+	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
+	for _, key := range filteredKeys {
+		metric := metricFromHash(valuesByKey[key])
 		if metric.AppID == "" || metric.AppID == "unknown_app" {
 			continue
 		}
@@ -583,17 +664,21 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	metrics := make(map[string]model.RouteGroupMetric)
+	filteredKeys := make([]string, 0, len(keys))
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
 		if !ok || bucketUnix < minBucket || bucketUnix > maxBucket {
 			continue
 		}
-		values, err := s.client.Do(ctx, "HGETALL", key)
-		if err != nil {
-			return nil, err
-		}
-		metric := metricFromHash(values)
+		filteredKeys = append(filteredKeys, key)
+	}
+	valuesByKey, err := s.hgetallMany(ctx, filteredKeys)
+	if err != nil {
+		return nil, err
+	}
+	metrics := make(map[string]model.RouteGroupMetric)
+	for _, key := range filteredKeys {
+		metric := metricFromHash(valuesByKey[key])
 		if metric.ComponentID == "" {
 			continue
 		}
@@ -662,7 +747,41 @@ func (s *RedisStore) saveSnapshot(ctx context.Context, scope model.AggregateScop
 	if err != nil {
 		return err
 	}
-	if _, err := s.client.Do(ctx, "SET", routeGroupSnapshotKey(scope, window, sortBy), string(payload), "EX", strconv.Itoa(snapshotTTLSeconds)); err != nil {
+	return s.saveSnapshotPayload(ctx, routeGroupSnapshotKey(scope, window, sortBy), routeGroupSnapshotMetaKey(scope, window, sortBy), payload)
+}
+
+func (s *RedisStore) readAppTrafficSnapshot(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string) ([]model.AppTrafficItem, bool, error) {
+	value, err := s.client.Do(ctx, "GET", appTrafficSnapshotKey(scope, window, sortBy))
+	if err != nil {
+		return nil, false, err
+	}
+	raw, ok := value.(string)
+	if !ok || raw == "" {
+		return nil, false, nil
+	}
+	var items []model.AppTrafficItem
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, false, err
+	}
+	if items == nil {
+		items = []model.AppTrafficItem{}
+	}
+	return items, true, nil
+}
+
+func (s *RedisStore) saveAppTrafficSnapshot(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string, items []model.AppTrafficItem) error {
+	if items == nil {
+		items = []model.AppTrafficItem{}
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	return s.saveSnapshotPayload(ctx, appTrafficSnapshotKey(scope, window, sortBy), appTrafficSnapshotMetaKey(scope, window, sortBy), payload)
+}
+
+func (s *RedisStore) saveSnapshotPayload(ctx context.Context, key, metaKey string, payload []byte) error {
+	if _, err := s.client.Do(ctx, "SET", key, string(payload), "EX", strconv.Itoa(snapshotTTLSeconds)); err != nil {
 		return err
 	}
 	meta := map[string]int64{"updated_unix": s.now().Unix()}
@@ -670,13 +789,22 @@ func (s *RedisStore) saveSnapshot(ctx context.Context, scope model.AggregateScop
 	if err != nil {
 		return err
 	}
-	_, err = s.client.Do(ctx, "SET", routeGroupSnapshotMetaKey(scope, window, sortBy), string(metaPayload), "EX", strconv.Itoa(snapshotTTLSeconds))
+	_, err = s.client.Do(ctx, "SET", metaKey, string(metaPayload), "EX", strconv.Itoa(snapshotTTLSeconds))
 	return err
 }
 
 func (s *RedisStore) GetRouteGroupSnapshotMeta(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string) (model.QueryMeta, error) {
 	meta := model.QueryMeta{Window: window}
-	value, err := s.client.Do(ctx, "GET", routeGroupSnapshotMetaKey(scope, window, sortBy))
+	return s.getSnapshotMeta(ctx, routeGroupSnapshotMetaKey(scope, window, sortBy), meta)
+}
+
+func (s *RedisStore) GetAppTrafficSnapshotMeta(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string) (model.QueryMeta, error) {
+	meta := model.QueryMeta{Window: window}
+	return s.getSnapshotMeta(ctx, appTrafficSnapshotMetaKey(scope, window, sortBy), meta)
+}
+
+func (s *RedisStore) getSnapshotMeta(ctx context.Context, key string, meta model.QueryMeta) (model.QueryMeta, error) {
+	value, err := s.client.Do(ctx, "GET", key)
 	if err != nil {
 		return meta, err
 	}
@@ -873,6 +1001,21 @@ func routeGroupSnapshotKey(scope model.AggregateScope, window model.Window, sort
 
 func routeGroupSnapshotMetaKey(scope model.AggregateScope, window model.Window, sortBy string) string {
 	return routeGroupSnapshotKey(scope, window, sortBy) + ":meta"
+}
+
+func appTrafficSnapshotKey(scope model.AggregateScope, window model.Window, sortBy string) string {
+	switch sortBy {
+	case "errors":
+		return fmt.Sprintf("nm:%s:%s:apps:error-top", scope.RedisPart(), window)
+	case "latency":
+		return fmt.Sprintf("nm:%s:%s:apps:latency-top", scope.RedisPart(), window)
+	default:
+		return fmt.Sprintf("nm:%s:%s:apps:throughput-top", scope.RedisPart(), window)
+	}
+}
+
+func appTrafficSnapshotMetaKey(scope model.AggregateScope, window model.Window, sortBy string) string {
+	return appTrafficSnapshotKey(scope, window, sortBy) + ":meta"
 }
 
 func scopeFromRedisPart(value string) model.AggregateScope {

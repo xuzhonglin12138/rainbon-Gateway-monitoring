@@ -822,6 +822,16 @@ func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	}
 }
 
+func TestPlatformNodeAvgLatencyQueryKeepsApisixLatencyMilliseconds(t *testing.T) {
+	query := platformNodeAvgLatencyQuery(model.Window5m)
+	if strings.Contains(query, "* 1000") {
+		t.Fatalf("latency query = %q; must not multiply APISIX latency histogram by 1000", query)
+	}
+	if !strings.Contains(query, "apisix_http_latency_sum") || !strings.Contains(query, "apisix_http_latency_count") {
+		t.Fatalf("latency query = %q; want APISIX latency histogram average", query)
+	}
+}
+
 func TestOverviewServiceGetsPlatformNodeDetail(t *testing.T) {
 	client := &fakePrometheusClient{
 		vectors: map[string][]promclient.Sample{

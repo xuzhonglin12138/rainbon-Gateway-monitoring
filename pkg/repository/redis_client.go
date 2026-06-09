@@ -75,6 +75,46 @@ func (c *RedisClient) Do(ctx context.Context, args ...string) (interface{}, erro
 	return readRESP(reader)
 }
 
+func (c *RedisClient) DoBatch(ctx context.Context, commands ...[]string) ([]interface{}, error) {
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	if c.password != "" {
+		if err := c.writeCommand(conn, "AUTH", c.password); err != nil {
+			return nil, err
+		}
+		if _, err := readRESP(reader); err != nil {
+			return nil, err
+		}
+	}
+	if c.db > 0 {
+		if err := c.writeCommand(conn, "SELECT", strconv.Itoa(c.db)); err != nil {
+			return nil, err
+		}
+		if _, err := readRESP(reader); err != nil {
+			return nil, err
+		}
+	}
+	for _, command := range commands {
+		if err := c.writeCommand(conn, command...); err != nil {
+			return nil, err
+		}
+	}
+	values := make([]interface{}, 0, len(commands))
+	for range commands {
+		value, err := readRESP(reader)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
 func (c *RedisClient) dial(ctx context.Context) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: c.timeout}
 	if deadline, ok := ctx.Deadline(); ok {

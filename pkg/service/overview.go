@@ -497,7 +497,7 @@ func platformNodeRequestsQuery(window model.Window) string {
 func platformNodeAvgLatencyQuery(window model.Window) string {
 	sumQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_sum{node!=""}[%s])`, window))
 	countQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_count{node!=""}[%s])`, window))
-	return fmt.Sprintf(`sum by (k8s_node) (%s) / clamp_min(sum by (k8s_node) (%s), 1) * 1000`, sumQuery, countQuery)
+	return fmt.Sprintf(`sum by (k8s_node) (%s) / clamp_min(sum by (k8s_node) (%s), 1)`, sumQuery, countQuery)
 }
 
 func platformNodeErrorsQuery(window model.Window) string {

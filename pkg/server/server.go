@@ -66,6 +66,10 @@ type RouteGroupSnapshotMetaStore interface {
 	GetRouteGroupSnapshotMeta(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string) (model.QueryMeta, error)
 }
 
+type AppTrafficSnapshotMetaStore interface {
+	GetAppTrafficSnapshotMeta(ctx context.Context, scope model.AggregateScope, window model.Window, sortBy string) (model.QueryMeta, error)
+}
+
 type SLAService interface {
 	GetAppSLA(ctx context.Context, appID string, window model.Window) (model.SLAStatus, error)
 }
@@ -1036,8 +1040,8 @@ func (s *Server) handleTopApps(w http.ResponseWriter, r *http.Request, scope mod
 		items = []model.AppTrafficItem{}
 	}
 	meta := model.QueryMeta{Window: window}
-	if metaStore, ok := s.queryStore.(RouteGroupSnapshotMetaStore); ok {
-		if snapshotMeta, err := metaStore.GetRouteGroupSnapshotMeta(r.Context(), scope, window, "requests"); err == nil {
+	if metaStore, ok := s.queryStore.(AppTrafficSnapshotMetaStore); ok {
+		if snapshotMeta, err := metaStore.GetAppTrafficSnapshotMeta(r.Context(), scope, window, sortBy); err == nil {
 			meta = snapshotMeta
 			meta.Window = window
 		}

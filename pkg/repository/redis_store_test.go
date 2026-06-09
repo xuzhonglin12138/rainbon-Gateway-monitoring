@@ -10,6 +10,7 @@ import (
 
 type fakeRedisClient struct {
 	calls         [][]string
+	batchCalls    [][][]string
 	keys          []interface{}
 	keysByPattern map[string][]interface{}
 	zrangeByKey   map[string][]interface{}
@@ -18,6 +19,19 @@ type fakeRedisClient struct {
 	get           interface{}
 	members       []interface{}
 	sets          map[string]interface{}
+}
+
+func (f *fakeRedisClient) DoBatch(ctx context.Context, commands ...[]string) ([]interface{}, error) {
+	f.batchCalls = append(f.batchCalls, commands)
+	values := make([]interface{}, 0, len(commands))
+	for _, command := range commands {
+		value, err := f.Do(ctx, command...)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, error) {
@@ -82,6 +96,16 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 	default:
 		return int64(1), nil
 	}
+}
+
+func countCommand(calls [][]string, command string) int {
+	count := 0
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == command {
+			count++
+		}
+	}
+	return count
 }
 
 func stringArgsContainPair(args []string, key, value string) bool {
@@ -289,6 +313,41 @@ func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 	}
 	if items[0].AvgLatencyMs != 30 {
 		t.Fatalf("avg latency = %v; want 30", items[0].AvgLatencyMs)
+	}
+	if len(client.batchCalls) == 0 {
+		t.Fatalf("expected bucket HGETALL commands to be pipelined, got calls %#v", client.calls)
+	}
+}
+
+func TestRedisStoreListAppsReadsSnapshotForPlatformScope(t *testing.T) {
+	client := &fakeRedisClient{
+		sets: map[string]interface{}{
+			appTrafficSnapshotKey(model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, "throughput"): `[{"app_id":"app-a","name":"orders","request_count":10,"error_count":2,"avg_latency_ms":30,"throughput_per_second":0.03333333333333333}]`,
+		},
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": {
+				"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005": {
+				"route_group", "/api/orders/*",
+				"request_count", "999",
+				"app_id", "app-a",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+
+	items, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListApps() unexpected error: %v", err)
+	}
+	if len(items) != 1 || items[0].RequestCount != 10 {
+		t.Fatalf("items = %#v; want snapshot result", items)
+	}
+	if countCommand(client.calls, "ZRANGEBYSCORE") != 0 {
+		t.Fatalf("ListApps platform scope should read app traffic snapshot without scanning buckets, got %#v", client.calls)
 	}
 }
 

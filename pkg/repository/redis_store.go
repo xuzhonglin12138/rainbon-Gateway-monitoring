@@ -819,11 +819,15 @@ func (s *RedisStore) ReplaceAppPrometheusRoutes(ctx context.Context, appID strin
 }
 
 func routeGroupBucketKey(scope model.AggregateScope, window model.Window, routeGroup string, bucketUnix int64) string {
-	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), window, sanitizeKeyPart(routeGroup), bucketUnix)
+	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), routeGroupBucketStorageWindow(window), sanitizeKeyPart(routeGroup), bucketUnix)
 }
 
 func routeGroupBucketPattern(scope model.AggregateScope, window model.Window) string {
-	return fmt.Sprintf("nm:%s:%s:route-group:*:bucket:*", scope.RedisPart(), window)
+	return fmt.Sprintf("nm:%s:%s:route-group:*:bucket:*", scope.RedisPart(), routeGroupBucketStorageWindow(window))
+}
+
+func routeGroupBucketStorageWindow(_ model.Window) model.Window {
+	return model.Window5m
 }
 
 func routeGroupSnapshotKey(scope model.AggregateScope, window model.Window, sortBy string) string {

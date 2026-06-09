@@ -105,7 +105,7 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 		t.Fatalf("Collect() unexpected error: %v", err)
 	}
 
-	wantWrites := 4 * 3
+	wantWrites := 4
 	if len(store.writes) != wantWrites {
 		t.Fatalf("writes = %d; want %d", len(store.writes), wantWrites)
 	}
@@ -143,6 +143,12 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 	if platform5m.EgressBytes != 3072 {
 		t.Fatalf("platform 5m egress bytes = %d; want 3072", platform5m.EgressBytes)
+	}
+
+	for _, write := range store.writes {
+		if write.Window != model.Window5m {
+			t.Fatalf("collector write window = %s; want single raw bucket window %s", write.Window, model.Window5m)
+		}
 	}
 }
 
@@ -218,13 +224,16 @@ func TestCollectorKeepsDistinctBucketsSeparateWhenBatchAggregating(t *testing.T)
 		t.Fatalf("Collect() unexpected error: %v", err)
 	}
 
-	wantWrites := 4 * 3 * 2
+	wantWrites := 4 * 2
 	if len(store.writes) != wantWrites {
 		t.Fatalf("writes = %d; want %d", len(store.writes), wantWrites)
 	}
 	seenBuckets := map[int64]bool{}
 	for _, write := range store.writes {
 		seenBuckets[write.BucketUnix] = true
+		if write.Window != model.Window5m {
+			t.Fatalf("collector write window = %s; want single raw bucket window %s", write.Window, model.Window5m)
+		}
 		if write.Metric.RequestCount != 1 {
 			t.Fatalf("request count = %d; want 1 for distinct bucket write", write.Metric.RequestCount)
 		}

@@ -398,15 +398,11 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 		keysByPattern: map[string][]interface{}{
 			"nm:app:app-a:5m:route-group:*:bucket:*": []interface{}{
 				"nm:app:app-a:5m:route-group:_api_same:bucket:1710000005",
+				"nm:app:app-a:5m:route-group:_api_same:bucket:1709999100",
 			},
 			"nm:app:app-b:5m:route-group:*:bucket:*": []interface{}{
 				"nm:app:app-b:5m:route-group:_api_same:bucket:1710000005",
-			},
-			"nm:app:app-a:30m:route-group:*:bucket:*": []interface{}{
-				"nm:app:app-a:30m:route-group:_api_same:bucket:1710000005",
-			},
-			"nm:app:app-b:30m:route-group:*:bucket:*": []interface{}{
-				"nm:app:app-b:30m:route-group:_api_same:bucket:1710000005",
+				"nm:app:app-b:5m:route-group:_api_same:bucket:1709999100",
 			},
 			"nm:platform:5m:route-group:*:bucket:*": []interface{}{
 				"nm:platform:5m:route-group:_api_same:bucket:1710000005",
@@ -434,19 +430,19 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 				"app_id", "app-b",
 				"team_id", "team-b",
 			},
-			"nm:app:app-a:30m:route-group:_api_same:bucket:1710000005": {
+			"nm:app:app-a:5m:route-group:_api_same:bucket:1709999100": {
 				"route_group", "/api/same",
-				"request_count", "30",
-				"latency_count", "30",
-				"latency_sum_ms", "300",
+				"request_count", "20",
+				"latency_count", "20",
+				"latency_sum_ms", "200",
 				"app_id", "app-a",
 				"team_id", "team-a",
 			},
-			"nm:app:app-b:30m:route-group:_api_same:bucket:1710000005": {
+			"nm:app:app-b:5m:route-group:_api_same:bucket:1709999100": {
 				"route_group", "/api/same",
-				"request_count", "40",
-				"latency_count", "40",
-				"latency_sum_ms", "800",
+				"request_count", "20",
+				"latency_count", "20",
+				"latency_sum_ms", "400",
 				"app_id", "app-b",
 				"team_id", "team-b",
 			},
@@ -475,7 +471,7 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 		t.Fatalf("30m items length = %d; want 2", len(items30m))
 	}
 	if items30m[0].AppID != "app-b" || items30m[0].RequestCount != 40 {
-		t.Fatalf("30m top item = %#v; want app-b with 40 requests from selected window", items30m[0])
+		t.Fatalf("30m top item = %#v; want app-b with current and older raw buckets from selected window", items30m[0])
 	}
 }
 
@@ -845,6 +841,44 @@ func TestRedisStoreListRouteGroupBucketPointsForAppDeduplicatesCanonicalAliasSco
 	}
 	if points[0].Metric.RequestCount != 50 {
 		t.Fatalf("request count = %d; want canonical alias duplicate counted once", points[0].Metric.RequestCount)
+	}
+}
+
+func TestRedisStoreListRouteGroupBucketPointsReadsRawBucketsForEveryWindow(t *testing.T) {
+	client := &fakeRedisClient{
+		keysByPattern: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:*:bucket:*": {
+				"nm:app:app-a:5m:route-group:_api_ping:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "70",
+				"latency_count", "70",
+				"latency_sum_ms", "700",
+				"app_id", "app-a",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	points5m, err := store.ListRouteGroupBucketPoints(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "app-a"}, model.Window5m)
+	if err != nil {
+		t.Fatalf("ListRouteGroupBucketPoints(5m) unexpected error: %v", err)
+	}
+	points10m, err := store.ListRouteGroupBucketPoints(context.Background(), model.AggregateScope{Kind: model.ScopeApp, ID: "app-a"}, model.Window10m)
+	if err != nil {
+		t.Fatalf("ListRouteGroupBucketPoints(10m) unexpected error: %v", err)
+	}
+	if len(points5m) != 1 || len(points10m) != 1 {
+		t.Fatalf("points length 5m=%d 10m=%d; want both windows to read the same raw bucket", len(points5m), len(points10m))
+	}
+	if points5m[0].Timestamp != points10m[0].Timestamp || points5m[0].Metric.RequestCount != points10m[0].Metric.RequestCount {
+		t.Fatalf("points differ: 5m=%#v 10m=%#v; want same raw bucket value", points5m[0], points10m[0])
 	}
 }
 

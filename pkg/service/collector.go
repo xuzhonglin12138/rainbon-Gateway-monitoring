@@ -132,10 +132,8 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 				"request_time":    log.RequestTime,
 			}).Debug("mapped apisix access log")
 		}
-		for _, window := range model.HotWindows() {
-			for _, scope := range scopesForMapping(mapping) {
-				addCollectorAggregate(aggregates, scope, window, bucket, metric)
-			}
+		for _, scope := range scopesForMapping(mapping) {
+			addCollectorAggregate(aggregates, scope, model.Window5m, bucket, metric)
 		}
 	}
 	for _, key := range sortedCollectorAggregateKeys(aggregates) {

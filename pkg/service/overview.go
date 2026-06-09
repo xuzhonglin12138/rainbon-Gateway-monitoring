@@ -358,12 +358,14 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 	transmitValues := rangeValuesByTimestamp(transmit)
 	timestamps := sortedTimestamps(requestValues, latencyValues, receiveValues, transmitValues)
 	points := make([]model.OverviewTrendPoint, 0, len(timestamps))
+	openBucket := model.AlignBucket(s.now())
 	for _, timestamp := range timestamps {
 		points = append(points, model.OverviewTrendPoint{
 			Timestamp:         timestamp,
 			RequestPerSecond:  requestValues[timestamp],
 			AvgLatencyMs:      latencyValues[timestamp],
 			EgressBytesPerSec: transmitValues[timestamp],
+			Partial:           isOpenTrendPoint(timestamp, openBucket),
 		})
 	}
 	return model.OverviewTrend{
@@ -599,6 +601,7 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 	egressValues := rangeValuesByTimestamp(egress)
 	timestamps := sortedTimestamps(requestValues, errorValues, latencyValues, egressValues)
 	points := make([]model.OverviewTrendPoint, 0, len(timestamps))
+	openBucket := model.AlignBucket(s.now())
 	for _, timestamp := range timestamps {
 		errorRate := 0.0
 		if requestValues[timestamp] > 0 {
@@ -610,9 +613,14 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 			ErrorRate:         errorRate,
 			AvgLatencyMs:      latencyValues[timestamp],
 			EgressBytesPerSec: egressValues[timestamp],
+			Partial:           isOpenTrendPoint(timestamp, openBucket),
 		})
 	}
 	return model.OverviewTrend{Scope: scope, Window: window, Points: points}, nil
+}
+
+func isOpenTrendPoint(timestamp, openBucket int64) bool {
+	return timestamp == openBucket
 }
 
 func alignedTrendRange(window model.Window, now time.Time, stepSeconds int64) (int64, int64) {

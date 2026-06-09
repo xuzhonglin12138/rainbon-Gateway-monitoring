@@ -338,6 +338,45 @@ func TestOverviewServiceGetsGatewayRealtimeTrend(t *testing.T) {
 	}
 }
 
+func TestOverviewServiceMarksOpenPrometheusTrendPointAsPartial(t *testing.T) {
+	client := &fakePrometheusClient{
+		ranges: map[string][]promclient.RangeSample{
+			`sum(rate(apisix_http_status[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 1005, Value: 2}, {Timestamp: 1010, Value: 9}}},
+			},
+			`sum(rate(apisix_http_status{code=~"5.."}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 1005, Value: 0}, {Timestamp: 1010, Value: 1}}},
+			},
+			`sum(rate(apisix_http_latency_sum{type="upstream"}[1m])) / sum(rate(apisix_http_latency_count{type="upstream"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 1005, Value: 20}, {Timestamp: 1010, Value: 30}}},
+			},
+			`sum(rate(apisix_bandwidth{type="egress"}[1m]))`: {
+				{Values: []promclient.Point{{Timestamp: 1005, Value: 2048}, {Timestamp: 1010, Value: 4096}}},
+			},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		Prometheus: client,
+		Now: func() time.Time {
+			return time.Unix(1011, 0)
+		},
+	})
+
+	trend, err := service.GetPlatformRealtimeTrend(context.Background(), model.Window5m)
+	if err != nil {
+		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
+	}
+	if len(trend.Points) != 2 {
+		t.Fatalf("points length = %d; want 2", len(trend.Points))
+	}
+	if trend.Points[0].Timestamp != 1005 || trend.Points[0].Partial {
+		t.Fatalf("closed point = %#v; want timestamp 1005 and partial=false", trend.Points[0])
+	}
+	if trend.Points[1].Timestamp != 1010 || !trend.Points[1].Partial {
+		t.Fatalf("partial point = %#v; want timestamp 1010 and partial=true", trend.Points[1])
+	}
+}
+
 func TestOverviewServiceSanitizesNonFiniteRealtimeTrendValues(t *testing.T) {
 	client := &fakePrometheusClient{
 		ranges: map[string][]promclient.RangeSample{

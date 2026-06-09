@@ -18,6 +18,18 @@ func TestDefaultCollectorURIUsesGatewayMonitoringService(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPLoggerBatchSettingsAreConservative(t *testing.T) {
+	if DefaultHTTPLoggerBatchMaxSize != 100 {
+		t.Fatalf("DefaultHTTPLoggerBatchMaxSize = %d; want 100", DefaultHTTPLoggerBatchMaxSize)
+	}
+	if DefaultHTTPLoggerInactiveTimeout != 2 {
+		t.Fatalf("DefaultHTTPLoggerInactiveTimeout = %d; want 2", DefaultHTTPLoggerInactiveTimeout)
+	}
+	if DefaultHTTPLoggerBufferDuration != 10 {
+		t.Fatalf("DefaultHTTPLoggerBufferDuration = %d; want 10", DefaultHTTPLoggerBufferDuration)
+	}
+}
+
 func TestCollectorURIFromEnvUsesExplicitCustomValue(t *testing.T) {
 	t.Setenv("NM_COLLECTOR_URI", "http://collector.example.com:30004"+CollectorPath)
 	t.Setenv("_SERVICE_ALIAS", "gra6b16b")

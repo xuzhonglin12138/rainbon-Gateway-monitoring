@@ -29,4 +29,13 @@ const (
 
 	// DefaultHTTPLoggerTimeout is the APISIX http-logger request timeout in seconds.
 	DefaultHTTPLoggerTimeout = 3
+
+	// DefaultHTTPLoggerBatchMaxSize limits each APISIX http-logger flush batch.
+	DefaultHTTPLoggerBatchMaxSize = 100
+
+	// DefaultHTTPLoggerInactiveTimeout flushes low traffic batches quickly.
+	DefaultHTTPLoggerInactiveTimeout = 2
+
+	// DefaultHTTPLoggerBufferDuration bounds how long APISIX can buffer log batches.
+	DefaultHTTPLoggerBufferDuration = 10
 )

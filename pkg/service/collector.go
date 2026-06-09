@@ -49,6 +49,11 @@ type collectorAggregateKey struct {
 	RouteGroup string
 }
 
+type routeMappingCacheResult struct {
+	mapping model.RouteMapping
+	err     error
+}
+
 func NewInternalRouteCollector(cfg CollectorConfig) *InternalRouteCollector {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -83,6 +88,7 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 	}
 	var skippedMissingRoute, resolvedCount, unknownMappingCount int
 	aggregates := make(map[collectorAggregateKey]model.RouteGroupMetric)
+	mappingCache := make(map[string]routeMappingCacheResult)
 	for _, log := range logs {
 		if log.RouteID == "" && log.RouteName == "" && log.ServiceID == "" {
 			skippedMissingRoute++
@@ -94,7 +100,7 @@ func (c *InternalRouteCollector) Collect(ctx context.Context, logs []model.Apisi
 			}
 			continue
 		}
-		mapping, err := c.resolveMapping(ctx, log)
+		mapping, err := c.resolveMapping(ctx, log, mappingCache)
 		if err != nil {
 			if c.logger != nil {
 				c.logger.WithError(err).WithFields(logrus.Fields{
@@ -261,17 +267,17 @@ func parseAccessLogTimestamp(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (c *InternalRouteCollector) resolveMapping(ctx context.Context, log model.ApisixAccessLog) (model.RouteMapping, error) {
+func (c *InternalRouteCollector) resolveMapping(ctx context.Context, log model.ApisixAccessLog, cache map[string]routeMappingCacheResult) (model.RouteMapping, error) {
 	var firstErr error
 	if log.RouteID != "" {
-		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteID, log.ServiceID)
+		mapping, err := c.resolveMappingByID(ctx, log.RouteID, log.ServiceID, cache)
 		if err == nil {
 			return mapping, nil
 		}
 		firstErr = err
 	}
 	if log.RouteName != "" && log.RouteName != log.RouteID {
-		mapping, err := c.mapper.ResolveRoute(ctx, log.RouteName, log.ServiceID)
+		mapping, err := c.resolveMappingByID(ctx, log.RouteName, log.ServiceID, cache)
 		if err == nil {
 			return mapping, nil
 		}
@@ -283,6 +289,16 @@ func (c *InternalRouteCollector) resolveMapping(ctx context.Context, log model.A
 		return model.RouteMapping{}, firstErr
 	}
 	return model.RouteMapping{ComponentID: log.ServiceID}, nil
+}
+
+func (c *InternalRouteCollector) resolveMappingByID(ctx context.Context, routeID, serviceID string, cache map[string]routeMappingCacheResult) (model.RouteMapping, error) {
+	key := routeID + "\x00" + serviceID
+	if result, ok := cache[key]; ok {
+		return result.mapping, result.err
+	}
+	mapping, err := c.mapper.ResolveRoute(ctx, routeID, serviceID)
+	cache[key] = routeMappingCacheResult{mapping: mapping, err: err}
+	return mapping, err
 }
 
 func (c *InternalRouteCollector) resolveRouteGroup(ctx context.Context, mapping model.RouteMapping, log model.ApisixAccessLog) string {

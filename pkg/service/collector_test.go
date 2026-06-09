@@ -57,6 +57,25 @@ func (f fakeRouteMapperByID) ResolveRoute(_ context.Context, routeID, serviceID 
 	return mapping, nil
 }
 
+type countingRouteMapper struct {
+	mapping model.RouteMapping
+	calls   map[string]int
+}
+
+func (f *countingRouteMapper) ResolveRoute(_ context.Context, routeID, serviceID string) (model.RouteMapping, error) {
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	key := routeID + "\x00" + serviceID
+	f.calls[key]++
+	mapping := f.mapping
+	mapping.RouteID = routeID
+	if mapping.ComponentID == "" {
+		mapping.ComponentID = serviceID
+	}
+	return mapping, nil
+}
+
 type fakeCollectorRuleStore struct {
 	rules []model.RouteGroupRule
 }
@@ -187,6 +206,38 @@ func TestCollectorFallsBackToRouteNameWhenRouteIDMappingMissing(t *testing.T) {
 		if write.Metric.AppID != "app-a" || write.Metric.ComponentID != "gr1ea4bc" {
 			t.Fatalf("metric identity = %#v; want mapped app/component", write.Metric)
 		}
+	}
+}
+
+func TestCollectorCachesRouteMappingWithinBatch(t *testing.T) {
+	store := &fakeAggregateStore{}
+	mapper := &countingRouteMapper{mapping: model.RouteMapping{
+		TeamID:      "team-a",
+		AppID:       "app-a",
+		ComponentID: "svc-a",
+	}}
+	collector := NewInternalRouteCollector(CollectorConfig{
+		Store:  store,
+		Mapper: mapper,
+		Now: func() time.Time {
+			return time.Unix(1710000007, 0)
+		},
+	})
+
+	err := collector.Collect(context.Background(), []model.ApisixAccessLog{
+		{RouteID: "route-a", ServiceID: "svc-a", URI: "/api/ping?request=1", Status: 200, RequestTime: 0.01},
+		{RouteID: "route-a", ServiceID: "svc-a", URI: "/api/ping?request=2", Status: 200, RequestTime: 0.01},
+		{RouteID: "route-a", ServiceID: "svc-a", URI: "/api/ping?request=3", Status: 200, RequestTime: 0.01},
+	})
+	if err != nil {
+		t.Fatalf("Collect() unexpected error: %v", err)
+	}
+
+	if mapper.calls["route-a\x00svc-a"] != 1 {
+		t.Fatalf("ResolveRoute calls = %#v; want one lookup for repeated route/service in one batch", mapper.calls)
+	}
+	if len(store.writes) == 0 {
+		t.Fatal("writes length = 0; want aggregate writes")
 	}
 }
 

@@ -12,10 +12,13 @@ const (
 )
 
 type HTTPLoggerConfig struct {
-	URI       string
-	Timeout   int
-	SSLVerify bool
-	LogFormat map[string]string
+	URI             string
+	Timeout         int
+	SSLVerify       bool
+	BatchMaxSize    int
+	InactiveTimeout int
+	BufferDuration  int
+	LogFormat       map[string]string
 }
 
 func (c HTTPLoggerConfig) plugin() map[string]interface{} {
@@ -23,6 +26,15 @@ func (c HTTPLoggerConfig) plugin() map[string]interface{} {
 		"uri":        c.URI,
 		"timeout":    int64(c.Timeout),
 		"ssl_verify": c.SSLVerify,
+	}
+	if c.BatchMaxSize > 0 {
+		config["batch_max_size"] = int64(c.BatchMaxSize)
+	}
+	if c.InactiveTimeout > 0 {
+		config["inactive_timeout"] = int64(c.InactiveTimeout)
+	}
+	if c.BufferDuration > 0 {
+		config["buffer_duration"] = int64(c.BufferDuration)
 	}
 	if len(c.LogFormat) > 0 {
 		config["log_format"] = copyStringMap(c.LogFormat)
@@ -229,6 +241,11 @@ func mergeHTTPLoggerPlugin(existing, desired map[string]interface{}) map[string]
 	config["uri"] = desiredConfig["uri"]
 	config["timeout"] = desiredConfig["timeout"]
 	config["ssl_verify"] = desiredConfig["ssl_verify"]
+	for _, key := range []string{"batch_max_size", "inactive_timeout", "buffer_duration"} {
+		if value, ok := desiredConfig[key]; ok {
+			config[key] = value
+		}
+	}
 	if logFormat, ok := desiredConfig["log_format"]; ok {
 		config["log_format"] = logFormat
 	}

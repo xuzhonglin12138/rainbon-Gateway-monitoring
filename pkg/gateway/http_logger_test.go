@@ -100,10 +100,13 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 	}}
 
 	cfg := HTTPLoggerConfig{
-		URI:       "http://new/api/v1/collector/apisix/logs",
-		Timeout:   3,
-		SSLVerify: false,
-		LogFormat: DefaultHTTPLoggerLogFormat(),
+		URI:             "http://new/api/v1/collector/apisix/logs",
+		Timeout:         3,
+		SSLVerify:       false,
+		BatchMaxSize:    100,
+		InactiveTimeout: 2,
+		BufferDuration:  10,
+		LogFormat:       DefaultHTTPLoggerLogFormat(),
 	}
 	changed, err := EnsureHTTPLoggerPlugin(route, cfg)
 	if err != nil {
@@ -128,6 +131,15 @@ func TestEnsureHTTPLoggerPluginRepairsManagedFieldsIdempotently(t *testing.T) {
 	plugins := httpRoutes[0].(map[string]interface{})["plugins"].([]interface{})
 	config := plugins[0].(map[string]interface{})["config"].(map[string]interface{})
 	logFormat := config["log_format"].(map[string]interface{})
+	if config["batch_max_size"] != int64(100) {
+		t.Fatalf("batch_max_size = %v; want 100", config["batch_max_size"])
+	}
+	if config["inactive_timeout"] != int64(2) {
+		t.Fatalf("inactive_timeout = %v; want 2", config["inactive_timeout"])
+	}
+	if config["buffer_duration"] != int64(10) {
+		t.Fatalf("buffer_duration = %v; want 10", config["buffer_duration"])
+	}
 	if logFormat["route_id"] != "$route_name" {
 		t.Fatalf("route_id log format = %q; want $route_name", logFormat["route_id"])
 	}

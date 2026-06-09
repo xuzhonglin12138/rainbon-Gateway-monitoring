@@ -167,10 +167,13 @@ func main() {
 	collectorURI := collectorURIFromEnv()
 	logger.WithField("collector_uri", collectorURI).Info("resolved apisix http-logger collector uri")
 	httpLoggerConfig := gateway.HTTPLoggerConfig{
-		URI:       collectorURI,
-		Timeout:   envInt("NM_HTTP_LOGGER_TIMEOUT_SECONDS", DefaultHTTPLoggerTimeout),
-		SSLVerify: envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
-		LogFormat: gateway.DefaultHTTPLoggerLogFormat(),
+		URI:             collectorURI,
+		Timeout:         envInt("NM_HTTP_LOGGER_TIMEOUT_SECONDS", DefaultHTTPLoggerTimeout),
+		SSLVerify:       envBool("NM_HTTP_LOGGER_SSL_VERIFY", false),
+		BatchMaxSize:    envInt("NM_HTTP_LOGGER_BATCH_MAX_SIZE", DefaultHTTPLoggerBatchMaxSize),
+		InactiveTimeout: envInt("NM_HTTP_LOGGER_INACTIVE_TIMEOUT_SECONDS", DefaultHTTPLoggerInactiveTimeout),
+		BufferDuration:  envInt("NM_HTTP_LOGGER_BUFFER_DURATION_SECONDS", DefaultHTTPLoggerBufferDuration),
+		LogFormat:       gateway.DefaultHTTPLoggerLogFormat(),
 	}
 	httpLoggerMode := httpLoggerModeFromEnv(logger)
 	licenseBypass := envBool("NM_SKIP_LICENSE_CHECK", false)

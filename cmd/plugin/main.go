@@ -139,9 +139,10 @@ func main() {
 		Logger:     logger,
 	})
 	overviewService := service.NewOverviewService(service.OverviewConfig{
-		Prometheus: prometheusClient,
-		Store:      redisStore,
-		Logger:     logger,
+		Prometheus:   prometheusClient,
+		Store:        redisStore,
+		NodeProvider: service.NewKubernetesNodeProvider(clientset),
+		Logger:       logger,
 	})
 	collector := service.NewInternalRouteCollector(service.CollectorConfig{
 		Store:           redisStore,

@@ -18,6 +18,15 @@ type fakeRouteGroupOverviewStore struct {
 	window  model.Window
 }
 
+type fakePlatformNodeProvider struct {
+	nodes []model.PlatformNode
+	err   error
+}
+
+func (f fakePlatformNodeProvider) ListPlatformNodes(_ context.Context) ([]model.PlatformNode, error) {
+	return f.nodes, f.err
+}
+
 func (f *fakeRouteGroupOverviewStore) ListRouteGroups(_ context.Context, scope model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
 	f.scope = scope
 	return f.items, nil
@@ -727,30 +736,40 @@ func TestOverviewServicePadsRouteGroupTrendToRequestedWindow(t *testing.T) {
 }
 
 func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
+	requestsQuery := platformNodeRequestsQuery(model.Window5m)
+	latencyQuery := platformNodeLatencyQuery(model.Window5m)
+	errorsQuery := platformNodeErrorsQuery(model.Window5m)
+	egressQuery := platformNodeEgressQuery(model.Window5m)
 	client := &fakePrometheusClient{
 		vectors: map[string][]promclient.Sample{
-			`sum by (instance) (increase(apisix_http_status[5m]))`: {
-				{Metric: map[string]string{"instance": "node-a:9091", "cluster": "cluster-a"}, Value: 1200},
+			requestsQuery: {
+				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 1200},
 			},
-			`histogram_quantile(0.50, sum by (instance, le) (rate(apisix_http_latency_bucket[5m]))) * 1000`: {
-				{Metric: map[string]string{"instance": "node-a:9091"}, Value: 36},
+			latencyQuery: {
+				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 36},
 			},
-			`sum by (instance) (increase(apisix_http_status{code=~"5.."}[5m]))`: {
-				{Metric: map[string]string{"instance": "node-a:9091"}, Value: 7},
+			errorsQuery: {
+				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 7},
 			},
-			`sum by (instance) (rate(apisix_bandwidth{type="egress"}[5m]))`: {
-				{Metric: map[string]string{"instance": "node-a:9091"}, Value: 4096},
+			egressQuery: {
+				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 4096},
 			},
 		},
 	}
-	service := NewOverviewService(OverviewConfig{Prometheus: client})
+	service := NewOverviewService(OverviewConfig{
+		Prometheus: client,
+		NodeProvider: fakePlatformNodeProvider{nodes: []model.PlatformNode{
+			{Name: "node-a", Cluster: "cluster-a"},
+			{Name: "node-b", Cluster: "cluster-b"},
+		}},
+	})
 
 	nodes, err := service.GetPlatformNodeSummaries(context.Background(), model.Window5m)
 	if err != nil {
 		t.Fatalf("GetPlatformNodeSummaries() unexpected error: %v", err)
 	}
-	if len(nodes) != 1 {
-		t.Fatalf("nodes length = %d; want 1", len(nodes))
+	if len(nodes) != 2 {
+		t.Fatalf("nodes length = %d; want 2", len(nodes))
 	}
 	if nodes[0].Name != "node-a" {
 		t.Fatalf("node name = %q; want node-a", nodes[0].Name)
@@ -769,6 +788,15 @@ func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	}
 	if nodes[0].Cluster != "cluster-a" {
 		t.Fatalf("cluster = %q; want cluster-a", nodes[0].Cluster)
+	}
+	if nodes[1].Name != "node-b" {
+		t.Fatalf("second node name = %q; want node-b", nodes[1].Name)
+	}
+	if nodes[1].RequestCount != 0 || nodes[1].P50LatencyMs != 0 || nodes[1].ErrorCount != 0 || nodes[1].EgressBytesPerSec != 0 {
+		t.Fatalf("second node metrics = %+v; want zero metrics", nodes[1])
+	}
+	if nodes[1].Cluster != "cluster-b" {
+		t.Fatalf("second node cluster = %q; want cluster-b", nodes[1].Cluster)
 	}
 }
 

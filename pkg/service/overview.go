@@ -18,8 +18,13 @@ type OverviewConfig struct {
 	Prometheus      PrometheusQueryClient
 	Store           routeIndexStore
 	RouteGroupStore routeGroupOverviewStore
+	NodeProvider    PlatformNodeProvider
 	Now             func() time.Time
 	Logger          *logrus.Logger
+}
+
+type PlatformNodeProvider interface {
+	ListPlatformNodes(ctx context.Context) ([]model.PlatformNode, error)
 }
 
 type routeIndexStore interface {
@@ -35,6 +40,7 @@ type OverviewService struct {
 	prometheus      PrometheusQueryClient
 	store           routeIndexStore
 	routeGroupStore routeGroupOverviewStore
+	nodeProvider    PlatformNodeProvider
 	now             func() time.Time
 	logger          *logrus.Logger
 }
@@ -57,7 +63,7 @@ func NewOverviewService(cfg OverviewConfig) *OverviewService {
 			routeGroupStore = store
 		}
 	}
-	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, routeGroupStore: routeGroupStore, now: cfg.Now, logger: cfg.Logger}
+	return &OverviewService{prometheus: cfg.Prometheus, store: cfg.Store, routeGroupStore: routeGroupStore, nodeProvider: cfg.NodeProvider, now: cfg.Now, logger: cfg.Logger}
 }
 
 func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error) {
@@ -396,26 +402,41 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 	if s.prometheus == nil {
 		return nil, fmt.Errorf("prometheus client is required")
 	}
-	requests, err := s.prometheus.QueryInstant(ctx, fmt.Sprintf(`sum by (instance) (increase(apisix_http_status[%s]))`, window))
+	requests, err := s.prometheus.QueryInstant(ctx, platformNodeRequestsQuery(window))
 	if err != nil {
 		return nil, err
 	}
-	latencies, err := s.prometheus.QueryInstant(ctx, fmt.Sprintf(`histogram_quantile(0.50, sum by (instance, le) (rate(apisix_http_latency_bucket[%s]))) * 1000`, window))
+	latencies, err := s.prometheus.QueryInstant(ctx, platformNodeLatencyQuery(window))
 	if err != nil {
 		return nil, err
 	}
-	errors, err := s.prometheus.QueryInstant(ctx, fmt.Sprintf(`sum by (instance) (increase(apisix_http_status{code=~"5.."}[%s]))`, window))
+	errors, err := s.prometheus.QueryInstant(ctx, platformNodeErrorsQuery(window))
 	if err != nil {
 		return nil, err
 	}
-	egress, err := s.prometheus.QueryInstant(ctx, fmt.Sprintf(`sum by (instance) (rate(apisix_bandwidth{type="egress"}[%s]))`, window))
+	egress, err := s.prometheus.QueryInstant(ctx, platformNodeEgressQuery(window))
 	if err != nil {
 		return nil, err
 	}
 
 	nodes := map[string]*model.PlatformNodeSummary{}
+	if s.nodeProvider != nil {
+		platformNodes, err := s.nodeProvider.ListPlatformNodes(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range platformNodes {
+			if node.Name == "" {
+				continue
+			}
+			nodes[node.Name] = &model.PlatformNodeSummary{Name: node.Name, Cluster: node.Cluster}
+		}
+	}
 	ensure := func(sample promclient.Sample) *model.PlatformNodeSummary {
-		name := nodeNameFromSample(sample)
+		name := sample.Metric["k8s_node"]
+		if name == "" {
+			name = nodeNameFromSample(sample)
+		}
 		if name == "" {
 			name = "unknown"
 		}
@@ -445,9 +466,32 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 		result = append(result, *node)
 	}
 	sort.Slice(result, func(i, j int) bool {
+		if result[i].RequestCount == result[j].RequestCount {
+			return result[i].Name < result[j].Name
+		}
 		return result[i].RequestCount > result[j].RequestCount
 	})
 	return result, nil
+}
+
+func platformNodeRequestsQuery(window model.Window) string {
+	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{node!=""}[%s])`, window)))
+}
+
+func platformNodeLatencyQuery(window model.Window) string {
+	return fmt.Sprintf(`histogram_quantile(0.50, sum by (k8s_node, le) (%s)) * 1000`, apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_bucket{node!=""}[%s])`, window)))
+}
+
+func platformNodeErrorsQuery(window model.Window) string {
+	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{node!="",code=~"5.."}[%s])`, window)))
+}
+
+func platformNodeEgressQuery(window model.Window) string {
+	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_bandwidth{type="egress",node!=""}[%s])`, window)))
+}
+
+func apisixPodNodeJoin(expr string) string {
+	return fmt.Sprintf(`label_replace(%s, "pod_ip", "$1", "node", "(.+)") * on(pod_ip) group_left(k8s_node) max by (pod_ip,k8s_node) (label_replace(kube_pod_info{pod_ip!=""}, "k8s_node", "$1", "node", "(.+)"))`, expr)
 }
 
 func (s *OverviewService) GetPlatformNodeDetail(ctx context.Context, nodeName string, window model.Window) (model.PlatformNodeDetail, error) {

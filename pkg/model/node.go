@@ -1,5 +1,10 @@
 package model
 
+type PlatformNode struct {
+	Name    string
+	Cluster string
+}
+
 type PlatformNodeSummary struct {
 	Name              string  `json:"name"`
 	Cluster           string  `json:"cluster,omitempty"`

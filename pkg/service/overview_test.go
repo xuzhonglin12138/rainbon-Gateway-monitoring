@@ -737,19 +737,19 @@ func TestOverviewServicePadsRouteGroupTrendToRequestedWindow(t *testing.T) {
 
 func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	requestsQuery := platformNodeRequestsQuery(model.Window5m)
-	latencyQuery := platformNodeLatencyQuery(model.Window5m)
+	latencyQuery := platformNodeAvgLatencyQuery(model.Window5m)
 	errorsQuery := platformNodeErrorsQuery(model.Window5m)
 	egressQuery := platformNodeEgressQuery(model.Window5m)
 	client := &fakePrometheusClient{
 		vectors: map[string][]promclient.Sample{
 			requestsQuery: {
-				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 1200},
+				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 1200.49},
 			},
 			latencyQuery: {
 				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 36},
 			},
 			errorsQuery: {
-				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 7},
+				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 7.51},
 			},
 			egressQuery: {
 				{Metric: map[string]string{"k8s_node": "node-a"}, Value: 4096},
@@ -759,8 +759,18 @@ func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	service := NewOverviewService(OverviewConfig{
 		Prometheus: client,
 		NodeProvider: fakePlatformNodeProvider{nodes: []model.PlatformNode{
-			{Name: "node-a", Cluster: "cluster-a"},
-			{Name: "node-b", Cluster: "cluster-b"},
+			{
+				Name:                   "node-a",
+				Cluster:                "cluster-a",
+				Status:                 "ready",
+				CPURequestedCores:      1.5,
+				CPUAllocatableCores:    4,
+				CPUAllocatedPercent:    37.5,
+				MemoryRequestedBytes:   2 * 1024 * 1024 * 1024,
+				MemoryAllocatableBytes: 8 * 1024 * 1024 * 1024,
+				MemoryAllocatedPercent: 25,
+			},
+			{Name: "node-b", Cluster: "cluster-b", Status: "not_ready"},
 		}},
 	})
 
@@ -774,14 +784,17 @@ func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	if nodes[0].Name != "node-a" {
 		t.Fatalf("node name = %q; want node-a", nodes[0].Name)
 	}
+	if nodes[0].Status != "ready" {
+		t.Fatalf("status = %q; want ready", nodes[0].Status)
+	}
 	if nodes[0].RequestCount != 1200 {
 		t.Fatalf("request count = %v; want 1200", nodes[0].RequestCount)
 	}
-	if nodes[0].P50LatencyMs != 36 {
-		t.Fatalf("p50 = %v; want 36", nodes[0].P50LatencyMs)
+	if nodes[0].AvgLatencyMs != 36 {
+		t.Fatalf("avg latency = %v; want 36", nodes[0].AvgLatencyMs)
 	}
-	if nodes[0].ErrorCount != 7 {
-		t.Fatalf("error count = %v; want 7", nodes[0].ErrorCount)
+	if nodes[0].ErrorCount != 8 {
+		t.Fatalf("error count = %v; want 8", nodes[0].ErrorCount)
 	}
 	if nodes[0].EgressBytesPerSec != 4096 {
 		t.Fatalf("egress = %v; want 4096", nodes[0].EgressBytesPerSec)
@@ -789,10 +802,19 @@ func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	if nodes[0].Cluster != "cluster-a" {
 		t.Fatalf("cluster = %q; want cluster-a", nodes[0].Cluster)
 	}
+	if nodes[0].CPURequestedCores != 1.5 || nodes[0].CPUAllocatableCores != 4 || nodes[0].CPUAllocatedPercent != 37.5 {
+		t.Fatalf("cpu allocation = %+v; want 1.5/4 cores and 37.5%%", nodes[0])
+	}
+	if nodes[0].MemoryRequestedBytes != 2*1024*1024*1024 || nodes[0].MemoryAllocatableBytes != 8*1024*1024*1024 || nodes[0].MemoryAllocatedPercent != 25 {
+		t.Fatalf("memory allocation = %+v; want 2Gi/8Gi and 25%%", nodes[0])
+	}
 	if nodes[1].Name != "node-b" {
 		t.Fatalf("second node name = %q; want node-b", nodes[1].Name)
 	}
-	if nodes[1].RequestCount != 0 || nodes[1].P50LatencyMs != 0 || nodes[1].ErrorCount != 0 || nodes[1].EgressBytesPerSec != 0 {
+	if nodes[1].Status != "not_ready" {
+		t.Fatalf("second node status = %q; want not_ready", nodes[1].Status)
+	}
+	if nodes[1].RequestCount != 0 || nodes[1].AvgLatencyMs != 0 || nodes[1].ErrorCount != 0 || nodes[1].EgressBytesPerSec != 0 {
 		t.Fatalf("second node metrics = %+v; want zero metrics", nodes[1])
 	}
 	if nodes[1].Cluster != "cluster-b" {

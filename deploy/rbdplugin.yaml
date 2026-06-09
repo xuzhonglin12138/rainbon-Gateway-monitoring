@@ -57,6 +57,9 @@ kind: ClusterRole
 metadata:
   name: rainbond-gateway-monitoring-apisix
 rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: ["apisix.apache.org"]
   resources: ["apisixroutes"]
   verbs: ["get", "list", "watch"]

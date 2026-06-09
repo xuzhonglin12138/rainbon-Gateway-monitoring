@@ -69,8 +69,9 @@ func (f *fakeOverviewService) GetPlatformNodeSummaries(_ context.Context, window
 	return []model.PlatformNodeSummary{{
 		Name:              "node-a",
 		Cluster:           "cluster-a",
+		Status:            "ready",
 		RequestCount:      100,
-		P50LatencyMs:      35,
+		AvgLatencyMs:      35,
 		ErrorCount:        2,
 		EgressBytesPerSec: 2048,
 	}}, nil
@@ -149,7 +150,7 @@ func TestServerHandlesPlatformNodeRoutes(t *testing.T) {
 		path string
 		want string
 	}{
-		{path: "/api/v1/platform/nodes/summary?window=5m", want: `"p50_latency_ms":35`},
+		{path: "/api/v1/platform/nodes/summary?window=5m", want: `"avg_latency_ms":35`},
 		{path: "/api/v1/platform/nodes/node-a/detail?window=10m", want: `"cpu_usage_percent":42`},
 	}
 	for _, tt := range tests {

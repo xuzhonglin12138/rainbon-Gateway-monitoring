@@ -406,7 +406,7 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 	if err != nil {
 		return nil, err
 	}
-	latencies, err := s.prometheus.QueryInstant(ctx, platformNodeLatencyQuery(window))
+	latencies, err := s.prometheus.QueryInstant(ctx, platformNodeAvgLatencyQuery(window))
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +429,7 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 			if node.Name == "" {
 				continue
 			}
-			nodes[node.Name] = &model.PlatformNodeSummary{Name: node.Name, Cluster: node.Cluster}
+			nodes[node.Name] = platformNodeSummaryFromNode(node)
 		}
 	}
 	ensure := func(sample promclient.Sample) *model.PlatformNodeSummary {
@@ -449,13 +449,15 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 		return nodes[name]
 	}
 	for _, sample := range requests {
-		ensure(sample).RequestCount = sample.Value
+		ensure(sample).RequestCount = math.Round(sample.Value)
 	}
 	for _, sample := range latencies {
-		ensure(sample).P50LatencyMs = sample.Value
+		node := ensure(sample)
+		node.AvgLatencyMs = sample.Value
+		node.P50LatencyMs = sample.Value
 	}
 	for _, sample := range errors {
-		ensure(sample).ErrorCount = sample.Value
+		ensure(sample).ErrorCount = math.Round(sample.Value)
 	}
 	for _, sample := range egress {
 		ensure(sample).EgressBytesPerSec = sample.Value
@@ -474,12 +476,28 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 	return result, nil
 }
 
+func platformNodeSummaryFromNode(node model.PlatformNode) *model.PlatformNodeSummary {
+	return &model.PlatformNodeSummary{
+		Name:                   node.Name,
+		Cluster:                node.Cluster,
+		Status:                 node.Status,
+		CPURequestedCores:      node.CPURequestedCores,
+		CPUAllocatableCores:    node.CPUAllocatableCores,
+		CPUAllocatedPercent:    node.CPUAllocatedPercent,
+		MemoryRequestedBytes:   node.MemoryRequestedBytes,
+		MemoryAllocatableBytes: node.MemoryAllocatableBytes,
+		MemoryAllocatedPercent: node.MemoryAllocatedPercent,
+	}
+}
+
 func platformNodeRequestsQuery(window model.Window) string {
 	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{node!=""}[%s])`, window)))
 }
 
-func platformNodeLatencyQuery(window model.Window) string {
-	return fmt.Sprintf(`histogram_quantile(0.50, sum by (k8s_node, le) (%s)) * 1000`, apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_bucket{node!=""}[%s])`, window)))
+func platformNodeAvgLatencyQuery(window model.Window) string {
+	sumQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_sum{node!=""}[%s])`, window))
+	countQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_count{node!=""}[%s])`, window))
+	return fmt.Sprintf(`sum by (k8s_node) (%s) / clamp_min(sum by (k8s_node) (%s), 1) * 1000`, sumQuery, countQuery)
 }
 
 func platformNodeErrorsQuery(window model.Window) string {
@@ -512,9 +530,30 @@ func (s *OverviewService) GetPlatformNodeDetail(ctx context.Context, nodeName st
 	}
 
 	detail := model.PlatformNodeDetail{Name: nodeName, Status: "unknown"}
+	if s.nodeProvider != nil {
+		platformNodes, err := s.nodeProvider.ListPlatformNodes(ctx)
+		if err != nil {
+			return model.PlatformNodeDetail{}, err
+		}
+		for _, node := range platformNodes {
+			if node.Name == nodeName {
+				detail.Cluster = node.Cluster
+				detail.Status = node.Status
+				detail.CPURequestedCores = node.CPURequestedCores
+				detail.CPUAllocatableCores = node.CPUAllocatableCores
+				detail.CPUAllocatedPercent = node.CPUAllocatedPercent
+				detail.MemoryRequestedBytes = node.MemoryRequestedBytes
+				detail.MemoryAllocatableBytes = node.MemoryAllocatableBytes
+				detail.MemoryAllocatedPercent = node.MemoryAllocatedPercent
+				break
+			}
+		}
+	}
 	for _, sample := range ready {
 		if nodeNameFromSample(sample) == nodeName {
-			detail.Cluster = sample.Metric["cluster"]
+			if detail.Cluster == "" {
+				detail.Cluster = sample.Metric["cluster"]
+			}
 			if sample.Value > 0 {
 				detail.Status = "ready"
 			} else {

@@ -15,6 +15,30 @@ import (
 const bucketTTLSeconds = 35 * 60
 const snapshotTTLSeconds = 120
 const scopeRegistryKey = "nm:route-group:scopes"
+const addRouteGroupBucketScript = `
+local bucketKey = KEYS[1]
+local indexKey = KEYS[2]
+local bucketUnix = ARGV[1]
+local ttl = ARGV[2]
+local numericCount = tonumber(ARGV[3])
+local offset = 4
+
+redis.call("ZADD", indexKey, bucketUnix, bucketKey)
+redis.call("EXPIRE", indexKey, ttl)
+
+for i = 1, numericCount do
+	local field = ARGV[offset]
+	local value = ARGV[offset + 1]
+	if value ~= "0" then
+		redis.call("HINCRBYFLOAT", bucketKey, field, value)
+	end
+	offset = offset + 2
+end
+
+redis.call("HSET", bucketKey, unpack(ARGV, offset))
+redis.call("EXPIRE", bucketKey, ttl)
+return 1
+`
 
 type CommandClient interface {
 	Do(ctx context.Context, args ...string) (interface{}, error)
@@ -42,6 +66,7 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		return err
 	}
 	key := routeGroupBucketKey(scope, window, metric.RouteGroup, bucketUnix)
+	indexKey := routeGroupBucketIndexKey(scope)
 	updates := []struct {
 		field string
 		value float64
@@ -52,14 +77,6 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		{"latency_sum_ms", metric.LatencySumMs},
 		{"latency_count", float64(metric.LatencyCount)},
 		{"egress_bytes", float64(metric.EgressBytes)},
-	}
-	for _, update := range updates {
-		if update.value == 0 {
-			continue
-		}
-		if _, err := s.client.Do(ctx, "HINCRBYFLOAT", key, update.field, strconv.FormatFloat(update.value, 'f', -1, 64)); err != nil {
-			return err
-		}
 	}
 	static := []string{
 		"route_group", metric.RouteGroup,
@@ -74,10 +91,21 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		"component_id", metric.ComponentID,
 		"service_alias", metric.ServiceAlias,
 	}
-	if _, err := s.client.Do(ctx, append([]string{"HSET", key}, static...)...); err != nil {
-		return err
+	args := []string{
+		"EVAL",
+		addRouteGroupBucketScript,
+		"2",
+		key,
+		indexKey,
+		strconv.FormatInt(bucketUnix, 10),
+		strconv.Itoa(bucketTTLSeconds),
+		strconv.Itoa(len(updates)),
 	}
-	_, err := s.client.Do(ctx, "EXPIRE", key, strconv.Itoa(bucketTTLSeconds))
+	for _, update := range updates {
+		args = append(args, update.field, strconv.FormatFloat(update.value, 'f', -1, 64))
+	}
+	args = append(args, static...)
+	_, err := s.client.Do(ctx, args...)
 	return err
 }
 
@@ -208,16 +236,16 @@ func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, sco
 }
 
 func (s *RedisStore) listRouteGroupBucketMetricsForScope(ctx context.Context, scope model.AggregateScope, window model.Window) ([]routeGroupBucketMetric, error) {
-	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	minBucket, maxBucket := bucketWindowBounds(s.now(), window)
+	keysValue, err := s.client.Do(ctx, "ZRANGEBYSCORE", routeGroupBucketIndexKey(scope), strconv.FormatInt(minBucket, 10), strconv.FormatInt(maxBucket, 10))
 	if err != nil {
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	now := s.now()
 	metrics := make([]routeGroupBucketMetric, 0, len(keys))
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || !bucketInWindow(bucketUnix, now, window) {
+		if !ok || bucketUnix < minBucket || bucketUnix > maxBucket {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -494,17 +522,17 @@ func (s *RedisStore) aggregateAppMetricsForApp(ctx context.Context, appID string
 }
 
 func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
-	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	minBucket, maxBucket := bucketWindowBounds(s.now(), window)
+	keysValue, err := s.client.Do(ctx, "ZRANGEBYSCORE", routeGroupBucketIndexKey(scope), strconv.FormatInt(minBucket, 10), strconv.FormatInt(maxBucket, 10))
 	if err != nil {
 		return nil, nil, err
 	}
 	keys := stringSlice(keysValue)
-	now := s.now()
 	metrics := make(map[string]model.RouteGroupMetric)
 	routeMetrics := make(map[string]map[string]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || !bucketInWindow(bucketUnix, now, window) {
+		if !ok || bucketUnix < minBucket || bucketUnix > maxBucket {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -549,16 +577,16 @@ func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope mod
 }
 
 func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
-	keysValue, err := s.client.Do(ctx, "KEYS", routeGroupBucketPattern(scope, window))
+	minBucket, maxBucket := bucketWindowBounds(s.now(), window)
+	keysValue, err := s.client.Do(ctx, "ZRANGEBYSCORE", routeGroupBucketIndexKey(scope), strconv.FormatInt(minBucket, 10), strconv.FormatInt(maxBucket, 10))
 	if err != nil {
 		return nil, err
 	}
 	keys := stringSlice(keysValue)
-	now := s.now()
 	metrics := make(map[string]model.RouteGroupMetric)
 	for _, key := range keys {
 		bucketUnix, ok := bucketUnixFromKey(key)
-		if !ok || !bucketInWindow(bucketUnix, now, window) {
+		if !ok || bucketUnix < minBucket || bucketUnix > maxBucket {
 			continue
 		}
 		values, err := s.client.Do(ctx, "HGETALL", key)
@@ -822,8 +850,8 @@ func routeGroupBucketKey(scope model.AggregateScope, window model.Window, routeG
 	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), routeGroupBucketStorageWindow(window), sanitizeKeyPart(routeGroup), bucketUnix)
 }
 
-func routeGroupBucketPattern(scope model.AggregateScope, window model.Window) string {
-	return fmt.Sprintf("nm:%s:%s:route-group:*:bucket:*", scope.RedisPart(), routeGroupBucketStorageWindow(window))
+func routeGroupBucketIndexKey(scope model.AggregateScope) string {
+	return fmt.Sprintf("nm:%s:route-group-buckets", scope.RedisPart())
 }
 
 func routeGroupBucketStorageWindow(_ model.Window) model.Window {
@@ -867,10 +895,10 @@ func bucketUnixFromKey(key string) (int64, bool) {
 	return value, err == nil
 }
 
-func bucketInWindow(bucketUnix int64, now time.Time, window model.Window) bool {
+func bucketWindowBounds(now time.Time, window model.Window) (int64, int64) {
 	minBucket := model.AlignBucket(now.Add(-window.Duration() + model.BucketSize))
 	maxBucket := model.AlignBucket(now)
-	return bucketUnix >= minBucket && bucketUnix <= maxBucket
+	return minBucket, maxBucket
 }
 
 func routeMappingKey(routeID string) string {

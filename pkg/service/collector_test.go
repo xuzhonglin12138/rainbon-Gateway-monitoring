@@ -111,8 +111,8 @@ func TestCollectorAggregatesApisixLogsIntoAllHotWindowsAndScopes(t *testing.T) {
 	}
 
 	first := store.writes[0]
-	if first.BucketUnix != 1710000005 {
-		t.Fatalf("bucket = %d; want 1710000005", first.BucketUnix)
+	if first.BucketUnix != 1710000007 {
+		t.Fatalf("bucket = %d; want 1710000007", first.BucketUnix)
 	}
 	if first.Metric.RouteGroup != "/api/order/detail/*" {
 		t.Fatalf("route group = %q; want /api/order/detail/*", first.Metric.RouteGroup)
@@ -200,7 +200,7 @@ func TestCollectorKeepsDistinctBucketsSeparateWhenBatchAggregating(t *testing.T)
 			ComponentID: "svc-a",
 		}},
 		Now: func() time.Time {
-			return time.Unix(1710000010, 0)
+			return time.Unix(1710000011, 0)
 		},
 	})
 
@@ -238,8 +238,8 @@ func TestCollectorKeepsDistinctBucketsSeparateWhenBatchAggregating(t *testing.T)
 			t.Fatalf("request count = %d; want 1 for distinct bucket write", write.Metric.RequestCount)
 		}
 	}
-	if !seenBuckets[1710000005] || !seenBuckets[1710000010] {
-		t.Fatalf("seen buckets = %#v; want 1710000005 and 1710000010", seenBuckets)
+	if !seenBuckets[1710000007] || !seenBuckets[1710000011] {
+		t.Fatalf("seen buckets = %#v; want 1710000007 and 1710000011", seenBuckets)
 	}
 }
 
@@ -274,8 +274,8 @@ func TestCollectorUsesAccessLogTimestampForBucket(t *testing.T) {
 		t.Fatal("writes length = 0; want > 0")
 	}
 	for _, write := range store.writes {
-		if write.BucketUnix != 1710000005 {
-			t.Fatalf("bucket = %d; want 1710000005", write.BucketUnix)
+		if write.BucketUnix != 1710000007 {
+			t.Fatalf("bucket = %d; want 1710000007", write.BucketUnix)
 		}
 	}
 }

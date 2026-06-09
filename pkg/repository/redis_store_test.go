@@ -12,6 +12,7 @@ type fakeRedisClient struct {
 	calls         [][]string
 	keys          []interface{}
 	keysByPattern map[string][]interface{}
+	zrangeByKey   map[string][]interface{}
 	hash          []interface{}
 	hashByKey     map[string][]interface{}
 	get           interface{}
@@ -29,6 +30,13 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 			}
 		}
 		return f.keys, nil
+	case "ZRANGEBYSCORE":
+		if f.zrangeByKey != nil {
+			if value, ok := f.zrangeByKey[args[1]]; ok {
+				return value, nil
+			}
+		}
+		return []interface{}{}, nil
 	case "HGETALL":
 		if f.hashByKey != nil {
 			if value, ok := f.hashByKey[args[1]]; ok {
@@ -76,6 +84,15 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 	}
 }
 
+func stringArgsContainPair(args []string, key, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 	client := &fakeRedisClient{}
 	store := NewRedisStore(client)
@@ -99,16 +116,6 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 		t.Fatalf("AddRouteGroupBucket() unexpected error: %v", err)
 	}
 
-	var sawExpire bool
-	for _, call := range client.calls {
-		if len(call) == 3 && call[0] == "EXPIRE" && call[2] == "2100" {
-			sawExpire = true
-		}
-	}
-	if !sawExpire {
-		t.Fatalf("expected EXPIRE with 35 minute TTL, got %#v", client.calls)
-	}
-
 	var sawScopeRegister bool
 	for _, call := range client.calls {
 		if len(call) == 3 && call[0] == "SADD" && call[1] == "nm:route-group:scopes" && call[2] == "app:app-a" {
@@ -119,23 +126,50 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 		t.Fatalf("expected scope registration, got %#v", client.calls)
 	}
 
-	var sawEgressWrite bool
+	var evalCall []string
 	for _, call := range client.calls {
-		if len(call) == 4 && call[0] == "HINCRBYFLOAT" && call[2] == "egress_bytes" && call[3] == "4096" {
-			sawEgressWrite = true
+		if len(call) > 0 && call[0] == "EVAL" {
+			evalCall = call
 		}
 	}
-	if !sawEgressWrite {
-		t.Fatalf("expected egress_bytes HINCRBYFLOAT, got %#v", client.calls)
+	if evalCall == nil {
+		t.Fatalf("expected route group bucket Lua write, got %#v", client.calls)
+	}
+	if len(evalCall) < 8 {
+		t.Fatalf("unexpected EVAL call: %#v", evalCall)
+	}
+	if evalCall[2] != "2" {
+		t.Fatalf("EVAL key count = %s; want 2", evalCall[2])
+	}
+	if evalCall[3] != "nm:app:app-a:5m:route-group:/api/order/detail/*:bucket:1710000005" {
+		t.Fatalf("EVAL bucket key = %s", evalCall[3])
+	}
+	if evalCall[4] != "nm:app:app-a:route-group-buckets" {
+		t.Fatalf("EVAL index key = %s", evalCall[4])
+	}
+	if evalCall[5] != "1710000005" || evalCall[6] != "2100" {
+		t.Fatalf("EVAL bucket metadata = %#v; want bucket=1710000005 ttl=2100", evalCall[5:7])
+	}
+	for _, pair := range [][2]string{
+		{"request_count", "1"},
+		{"egress_bytes", "4096"},
+		{"route_group", "/api/order/detail/*"},
+		{"app_id", "app-a"},
+	} {
+		if !stringArgsContainPair(evalCall, pair[0], pair[1]) {
+			t.Fatalf("EVAL args missing %s=%s: %#v", pair[0], pair[1], evalCall)
+		}
 	}
 }
 
 func TestRedisStoreRefreshRouteGroupSnapshotsFiltersBucketsByWindow(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"platform"},
-		keys: []interface{}{
-			"nm:platform:5m:route-group:_api_old:bucket:1709999000",
-			"nm:platform:5m:route-group:_api_new:bucket:1710000005",
+		zrangeByKey: map[string][]interface{}{
+			"nm:platform:route-group-buckets": {
+				"nm:platform:5m:route-group:_api_old:bucket:1709999000",
+				"nm:platform:5m:route-group:_api_new:bucket:1710000005",
+			},
 		},
 		hash: []interface{}{
 			"route_group", "/api/new",
@@ -213,9 +247,11 @@ func TestRedisStoreListRouteGroupsNormalizesNullSnapshotToEmptyList(t *testing.T
 
 func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		keys: []interface{}{
-			"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005",
-			"nm:app:app-a:5m:route-group:_api_pay:bucket:1710000005",
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": {
+				"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005",
+				"nm:app:app-a:5m:route-group:_api_pay:bucket:1710000005",
+			},
 		},
 		hash: []interface{}{
 			"route_group", "/api/orders/*",
@@ -259,12 +295,12 @@ func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"app:app-a", "app:unknown_app"},
-		keysByPattern: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:*:bucket:*": []interface{}{
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": []interface{}{
 				"nm:app:app-a:5m:route-group:_api_orders:bucket:1710000005",
 				"nm:app:app-a:5m:route-group:_api_pay:bucket:1710000005",
 			},
-			"nm:app:unknown_app:5m:route-group:*:bucket:*": []interface{}{
+			"nm:app:unknown_app:route-group-buckets": []interface{}{
 				"nm:app:unknown_app:5m:route-group:_api_unmapped:bucket:1710000005",
 			},
 		},
@@ -355,8 +391,8 @@ func TestRedisStoreListsAppsFromHotBuckets(t *testing.T) {
 func TestRedisStoreListAppsCanonicalizesRegionAppID(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"app:region-app-a"},
-		keysByPattern: map[string][]interface{}{
-			"nm:app:region-app-a:5m:route-group:*:bucket:*": []interface{}{
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:region-app-a:route-group-buckets": []interface{}{
 				"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000005",
 			},
 		},
@@ -395,16 +431,16 @@ func TestRedisStoreListAppsCanonicalizesRegionAppID(t *testing.T) {
 func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"platform", "app:app-a", "app:app-b"},
-		keysByPattern: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:*:bucket:*": []interface{}{
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": []interface{}{
 				"nm:app:app-a:5m:route-group:_api_same:bucket:1710000005",
 				"nm:app:app-a:5m:route-group:_api_same:bucket:1709999100",
 			},
-			"nm:app:app-b:5m:route-group:*:bucket:*": []interface{}{
+			"nm:app:app-b:route-group-buckets": []interface{}{
 				"nm:app:app-b:5m:route-group:_api_same:bucket:1710000005",
 				"nm:app:app-b:5m:route-group:_api_same:bucket:1709999100",
 			},
-			"nm:platform:5m:route-group:*:bucket:*": []interface{}{
+			"nm:platform:route-group-buckets": []interface{}{
 				"nm:platform:5m:route-group:_api_same:bucket:1710000005",
 			},
 		},
@@ -478,8 +514,8 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"app:app-a"},
-		keysByPattern: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:*:bucket:*": {
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": {
 				"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400",
 				"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000",
 				"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360",
@@ -531,11 +567,11 @@ func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testin
 
 func TestRedisStoreListAppsDeduplicatesCanonicalAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		keysByPattern: map[string][]interface{}{
-			"nm:app:1023:5m:route-group:*:bucket:*": {
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:1023:route-group-buckets": {
 				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
 			},
-			"nm:app:region-app-a:5m:route-group:*:bucket:*": {
+			"nm:app:region-app-a:route-group-buckets": {
 				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
 			},
 		},
@@ -584,11 +620,11 @@ func TestRedisStoreListAppsDeduplicatesCanonicalAliasBuckets(t *testing.T) {
 
 func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		keysByPattern: map[string][]interface{}{
-			"nm:app:1023:5m:route-group:*:bucket:*": []interface{}{
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:1023:route-group-buckets": []interface{}{
 				"nm:app:1023:5m:route-group:_api_pay:bucket:1710000005",
 			},
-			"nm:app:region-app-a:5m:route-group:*:bucket:*": []interface{}{
+			"nm:app:region-app-a:route-group-buckets": []interface{}{
 				"nm:app:region-app-a:5m:route-group:_api_pay:bucket:1710000010",
 			},
 		},
@@ -637,11 +673,11 @@ func TestRedisStoreListRouteGroupsForAppIncludesRegionAliasBuckets(t *testing.T)
 
 func TestRedisStoreListRouteGroupsForAppDeduplicatesCanonicalAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		keysByPattern: map[string][]interface{}{
-			"nm:app:1023:5m:route-group:*:bucket:*": {
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:1023:route-group-buckets": {
 				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
 			},
-			"nm:app:region-app-a:5m:route-group:*:bucket:*": {
+			"nm:app:region-app-a:route-group-buckets": {
 				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
 			},
 		},
@@ -687,8 +723,8 @@ func TestRedisStoreListRouteGroupsForAppDeduplicatesCanonicalAliasBuckets(t *tes
 
 func TestRedisStoreListRouteGroupsForAppRequestRankingUsesOnlySelectedWindowBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		keysByPattern: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:*:bucket:*": {
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": {
 				"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400",
 				"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000",
 				"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360",
@@ -737,10 +773,12 @@ func TestRedisStoreListRouteGroupsForAppRequestRankingUsesOnlySelectedWindowBuck
 
 func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 	client := &fakeRedisClient{
-		keys: []interface{}{
-			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000005",
-			"nm:component:svc-a:5m:route-group:_api_order:bucket:1710000005",
-			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000010",
+		zrangeByKey: map[string][]interface{}{
+			"nm:component:svc-a:route-group-buckets": {
+				"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000005",
+				"nm:component:svc-a:5m:route-group:_api_order:bucket:1710000005",
+				"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000010",
+			},
 		},
 		hashByKey: map[string][]interface{}{
 			"nm:component:svc-a:5m:route-group:_api_ping:bucket:1710000005": {
@@ -796,11 +834,11 @@ func TestRedisStoreListsRouteGroupBucketPoints(t *testing.T) {
 
 func TestRedisStoreListRouteGroupBucketPointsForAppDeduplicatesCanonicalAliasScopes(t *testing.T) {
 	client := &fakeRedisClient{
-		keysByPattern: map[string][]interface{}{
-			"nm:app:1023:5m:route-group:*:bucket:*": {
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:1023:route-group-buckets": {
 				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
 			},
-			"nm:app:region-app-a:5m:route-group:*:bucket:*": {
+			"nm:app:region-app-a:route-group-buckets": {
 				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
 			},
 		},
@@ -846,8 +884,8 @@ func TestRedisStoreListRouteGroupBucketPointsForAppDeduplicatesCanonicalAliasSco
 
 func TestRedisStoreListRouteGroupBucketPointsReadsRawBucketsForEveryWindow(t *testing.T) {
 	client := &fakeRedisClient{
-		keysByPattern: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:*:bucket:*": {
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": {
 				"nm:app:app-a:5m:route-group:_api_ping:bucket:1710000005",
 			},
 		},
@@ -879,6 +917,11 @@ func TestRedisStoreListRouteGroupBucketPointsReadsRawBucketsForEveryWindow(t *te
 	}
 	if points5m[0].Timestamp != points10m[0].Timestamp || points5m[0].Metric.RequestCount != points10m[0].Metric.RequestCount {
 		t.Fatalf("points differ: 5m=%#v 10m=%#v; want same raw bucket value", points5m[0], points10m[0])
+	}
+	for _, call := range client.calls {
+		if call[0] == "KEYS" {
+			t.Fatalf("ListRouteGroupBucketPoints used KEYS: %#v", client.calls)
+		}
 	}
 }
 

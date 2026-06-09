@@ -358,14 +358,13 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 	transmitValues := rangeValuesByTimestamp(transmit)
 	timestamps := sortedTimestamps(requestValues, latencyValues, receiveValues, transmitValues)
 	points := make([]model.OverviewTrendPoint, 0, len(timestamps))
-	openBucket := model.AlignBucket(s.now())
 	for _, timestamp := range timestamps {
 		points = append(points, model.OverviewTrendPoint{
 			Timestamp:         timestamp,
 			RequestPerSecond:  requestValues[timestamp],
 			AvgLatencyMs:      latencyValues[timestamp],
 			EgressBytesPerSec: transmitValues[timestamp],
-			Partial:           isOpenTrendPoint(timestamp, openBucket),
+			Partial:           isOpenTrendPoint(timestamp, end),
 		})
 	}
 	return model.OverviewTrend{
@@ -539,8 +538,10 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 		return model.Overview{}, err
 	}
 	errorRate := 0.0
-	if total > 0 {
-		errorRate = errors / total
+	totalCount := math.Round(total)
+	errorCount := math.Round(errors)
+	if totalCount > 0 {
+		errorRate = errorCount / totalCount
 	}
 	latency := 0.0
 	if latencyCount > 0 {
@@ -553,13 +554,13 @@ func (s *OverviewService) gatewayOverview(ctx context.Context, scope model.Aggre
 	return model.Overview{
 		Scope:                     scope,
 		Window:                    window,
-		RequestCount:              total,
-		ErrorCount:                errors,
+		RequestCount:              totalCount,
+		ErrorCount:                errorCount,
 		ErrorRate:                 errorRate,
 		AvgLatencyMs:              latency,
 		EgressBytesPerSec:         egress,
-		ThroughputPerSecond:       total / windowSeconds,
-		RealtimeRequestPerSecond:  total / windowSeconds,
+		ThroughputPerSecond:       totalCount / windowSeconds,
+		RealtimeRequestPerSecond:  totalCount / windowSeconds,
 		RealtimeEgressBytesPerSec: egress,
 		RealtimeErrorRate:         errorRate,
 		RealtimeAvgLatencyMs:      latency,
@@ -601,7 +602,6 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 	egressValues := rangeValuesByTimestamp(egress)
 	timestamps := sortedTimestamps(requestValues, errorValues, latencyValues, egressValues)
 	points := make([]model.OverviewTrendPoint, 0, len(timestamps))
-	openBucket := model.AlignBucket(s.now())
 	for _, timestamp := range timestamps {
 		errorRate := 0.0
 		if requestValues[timestamp] > 0 {
@@ -613,7 +613,7 @@ func (s *OverviewService) gatewayRealtimeTrend(ctx context.Context, scope model.
 			ErrorRate:         errorRate,
 			AvgLatencyMs:      latencyValues[timestamp],
 			EgressBytesPerSec: egressValues[timestamp],
-			Partial:           isOpenTrendPoint(timestamp, openBucket),
+			Partial:           isOpenTrendPoint(timestamp, end),
 		})
 	}
 	return model.OverviewTrend{Scope: scope, Window: window, Points: points}, nil

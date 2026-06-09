@@ -10,10 +10,10 @@ func TestParseWindowAllowsOnlyHotWindows(t *testing.T) {
 		wantBucket int
 		wantErr    bool
 	}{
-		{name: "default empty window", input: "", want: Window5m, wantBucket: 60},
-		{name: "five minutes", input: "5m", want: Window5m, wantBucket: 60},
-		{name: "ten minutes", input: "10m", want: Window10m, wantBucket: 120},
-		{name: "thirty minutes", input: "30m", want: Window30m, wantBucket: 360},
+		{name: "default empty window", input: "", want: Window5m, wantBucket: 300},
+		{name: "five minutes", input: "5m", want: Window5m, wantBucket: 300},
+		{name: "ten minutes", input: "10m", want: Window10m, wantBucket: 600},
+		{name: "thirty minutes", input: "30m", want: Window30m, wantBucket: 1800},
 		{name: "reject one hour", input: "1h", wantErr: true},
 		{name: "reject custom window", input: "12m", wantErr: true},
 	}

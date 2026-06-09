@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const BucketSize = 5 * time.Second
+const BucketSize = time.Second
 
 type Window string
 

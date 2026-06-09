@@ -29,6 +29,15 @@ func (f *fakeRouteGroupOverviewStore) ListRouteGroupBucketPoints(_ context.Conte
 	return f.buckets, nil
 }
 
+func findTrendPoint(points []model.OverviewTrendPoint, timestamp int64) (model.OverviewTrendPoint, bool) {
+	for _, point := range points {
+		if point.Timestamp == timestamp {
+			return point, true
+		}
+	}
+	return model.OverviewTrendPoint{}, false
+}
+
 func TestOverviewServiceGetsPlatformOverview(t *testing.T) {
 	client := &fakePrometheusClient{values: map[string]float64{
 		`sum(increase(apisix_http_status[5m]))`:                     1000,
@@ -58,7 +67,7 @@ func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
 		buckets: []model.RouteGroupBucketPoint{
 			{
-				Timestamp: 1000,
+				Timestamp: 1009,
 				Metric: model.RouteGroupMetric{
 					RequestCount: 30,
 					ErrorCount:   3,
@@ -68,7 +77,7 @@ func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
 				},
 			},
 			{
-				Timestamp: 1005,
+				Timestamp: 1010,
 				Metric: model.RouteGroupMetric{
 					RequestCount: 10,
 					ErrorCount:   2,
@@ -105,8 +114,8 @@ func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
 	if overview.EgressBytesPerSec != 30 {
 		t.Fatalf("egress = %v; want 30", overview.EgressBytesPerSec)
 	}
-	if overview.RealtimeRequestPerSecond != 2 {
-		t.Fatalf("realtime request per second = %v; want 2", overview.RealtimeRequestPerSecond)
+	if overview.RealtimeRequestPerSecond != 10 {
+		t.Fatalf("realtime request per second = %v; want 10", overview.RealtimeRequestPerSecond)
 	}
 	if overview.RealtimeErrorRate != 0.2 {
 		t.Fatalf("realtime error rate = %v; want 0.2", overview.RealtimeErrorRate)
@@ -114,8 +123,8 @@ func TestOverviewServiceGetsPlatformOverviewFromRealtimeBuckets(t *testing.T) {
 	if overview.RealtimeAvgLatencyMs != 100 {
 		t.Fatalf("realtime latency = %v; want 100", overview.RealtimeAvgLatencyMs)
 	}
-	if overview.RealtimeEgressBytesPerSec != 1200 {
-		t.Fatalf("realtime egress = %v; want 1200", overview.RealtimeEgressBytesPerSec)
+	if overview.RealtimeEgressBytesPerSec != 6000 {
+		t.Fatalf("realtime egress = %v; want 6000", overview.RealtimeEgressBytesPerSec)
 	}
 }
 
@@ -123,7 +132,7 @@ func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
 		buckets: []model.RouteGroupBucketPoint{
 			{
-				Timestamp: 1005,
+				Timestamp: 1010,
 				Metric: model.RouteGroupMetric{
 					RequestCount: 10,
 					ErrorCount:   1,
@@ -133,7 +142,7 @@ func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
 				},
 			},
 			{
-				Timestamp: 1010,
+				Timestamp: 1011,
 				Metric: model.RouteGroupMetric{
 					RequestCount: 20,
 					ErrorCount:   4,
@@ -158,8 +167,8 @@ func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
 	if overview.RequestCount != 30 {
 		t.Fatalf("request count = %v; want 30", overview.RequestCount)
 	}
-	if overview.RealtimeRequestPerSecond != 4 {
-		t.Fatalf("realtime request per second = %v; want 4", overview.RealtimeRequestPerSecond)
+	if overview.RealtimeRequestPerSecond != 20 {
+		t.Fatalf("realtime request per second = %v; want 20", overview.RealtimeRequestPerSecond)
 	}
 	if overview.RealtimeErrorRate != 0.2 {
 		t.Fatalf("realtime error rate = %v; want 0.2", overview.RealtimeErrorRate)
@@ -167,8 +176,8 @@ func TestOverviewServiceUsesOpenBucketForRealtimeOverview(t *testing.T) {
 	if overview.RealtimeAvgLatencyMs != 100 {
 		t.Fatalf("realtime latency = %v; want 100", overview.RealtimeAvgLatencyMs)
 	}
-	if overview.RealtimeEgressBytesPerSec != 1000 {
-		t.Fatalf("realtime egress = %v; want 1000", overview.RealtimeEgressBytesPerSec)
+	if overview.RealtimeEgressBytesPerSec != 5000 {
+		t.Fatalf("realtime egress = %v; want 5000", overview.RealtimeEgressBytesPerSec)
 	}
 }
 
@@ -605,9 +614,12 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	if len(trend.Points) != model.Window5m.BucketCount() {
 		t.Fatalf("points length = %d; want %d", len(trend.Points), model.Window5m.BucketCount())
 	}
-	firstActual := trend.Points[len(trend.Points)-2]
-	lastActual := trend.Points[len(trend.Points)-1]
-	if firstActual.Timestamp != 1000 || lastActual.Timestamp != 1005 {
+	firstActual, ok := findTrendPoint(trend.Points, 1000)
+	if !ok {
+		t.Fatalf("missing timestamp 1000: %#v", trend.Points)
+	}
+	lastActual, ok := findTrendPoint(trend.Points, 1005)
+	if !ok {
 		t.Fatalf("timestamps = %#v", trend.Points)
 	}
 	if firstActual.RequestPerSecond != float64(30)/model.BucketSize.Seconds() {
@@ -619,14 +631,14 @@ func TestOverviewServiceGetsComponentTrendFromRouteGroups(t *testing.T) {
 	if firstActual.AvgLatencyMs != 50 {
 		t.Fatalf("latency = %v; want 50", firstActual.AvgLatencyMs)
 	}
-	if firstActual.EgressBytesPerSec != 600 {
-		t.Fatalf("egress = %v; want 600", firstActual.EgressBytesPerSec)
+	if firstActual.EgressBytesPerSec != 3000 {
+		t.Fatalf("egress = %v; want 3000", firstActual.EgressBytesPerSec)
 	}
 	if lastActual.ErrorRate != 0.2 || lastActual.AvgLatencyMs != 80 {
 		t.Fatalf("second point = %#v", lastActual)
 	}
-	if lastActual.EgressBytesPerSec != 400 {
-		t.Fatalf("second egress = %v; want 400", lastActual.EgressBytesPerSec)
+	if lastActual.EgressBytesPerSec != 2000 {
+		t.Fatalf("second egress = %v; want 2000", lastActual.EgressBytesPerSec)
 	}
 }
 
@@ -634,13 +646,13 @@ func TestOverviewServiceMarksOpenRouteGroupTrendBucketAsPartial(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{
 		buckets: []model.RouteGroupBucketPoint{
 			{
-				Timestamp: 1005,
+				Timestamp: 1010,
 				Metric: model.RouteGroupMetric{
 					RequestCount: 10,
 				},
 			},
 			{
-				Timestamp: 1010,
+				Timestamp: 1011,
 				Metric: model.RouteGroupMetric{
 					RequestCount: 99,
 				},
@@ -658,16 +670,16 @@ func TestOverviewServiceMarksOpenRouteGroupTrendBucketAsPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPlatformRealtimeTrend() unexpected error: %v", err)
 	}
-	closed := trend.Points[len(trend.Points)-2]
-	partial := trend.Points[len(trend.Points)-1]
-	if closed.Timestamp != 1005 || closed.Partial {
-		t.Fatalf("closed point = %#v; want timestamp 1005 and partial=false", closed)
+	closed, ok := findTrendPoint(trend.Points, 1010)
+	if !ok || closed.Partial {
+		t.Fatalf("closed point = %#v; want timestamp 1010 and partial=false", closed)
 	}
 	if closed.RequestPerSecond != float64(10)/model.BucketSize.Seconds() {
 		t.Fatalf("closed request per second = %v; want closed bucket value", closed.RequestPerSecond)
 	}
-	if partial.Timestamp != 1010 || !partial.Partial {
-		t.Fatalf("partial point = %#v; want timestamp 1010 and partial=true", partial)
+	partial := trend.Points[len(trend.Points)-1]
+	if partial.Timestamp != 1011 || !partial.Partial {
+		t.Fatalf("partial point = %#v; want timestamp 1011 and partial=true", partial)
 	}
 	if partial.RequestPerSecond != float64(99)/model.BucketSize.Seconds() {
 		t.Fatalf("partial request per second = %v; want open bucket value", partial.RequestPerSecond)
@@ -705,12 +717,12 @@ func TestOverviewServicePadsRouteGroupTrendToRequestedWindow(t *testing.T) {
 	if len(trend.Points) != model.Window30m.BucketCount() {
 		t.Fatalf("points length = %d; want %d", len(trend.Points), model.Window30m.BucketCount())
 	}
-	wantFirst := int64(1005) - int64(model.Window30m.BucketCount()-1)*int64(model.BucketSize/time.Second)
+	wantFirst := closedTrendBucket(time.Unix(1010, 0)) - int64(model.Window30m.BucketCount()-1)*int64(model.BucketSize/time.Second)
 	if trend.Points[0].Timestamp != wantFirst {
 		t.Fatalf("first timestamp = %d; want %d", trend.Points[0].Timestamp, wantFirst)
 	}
-	if trend.Points[len(trend.Points)-1].Timestamp != 1005 {
-		t.Fatalf("last timestamp = %d; want 1005", trend.Points[len(trend.Points)-1].Timestamp)
+	if trend.Points[len(trend.Points)-1].Timestamp != closedTrendBucket(time.Unix(1010, 0)) {
+		t.Fatalf("last timestamp = %d; want latest closed bucket", trend.Points[len(trend.Points)-1].Timestamp)
 	}
 }
 

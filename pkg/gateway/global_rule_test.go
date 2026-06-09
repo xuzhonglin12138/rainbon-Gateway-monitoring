@@ -12,6 +12,7 @@ import (
 type fakeGlobalRuleClient struct {
 	upserts []globalRuleUpsert
 	deletes []globalRuleDelete
+	keep    []globalRuleKeepDelete
 }
 
 type globalRuleUpsert struct {
@@ -25,6 +26,12 @@ type globalRuleDelete struct {
 	name       string
 }
 
+type globalRuleKeepDelete struct {
+	namespaces     []string
+	name           string
+	keepNamespace  string
+}
+
 func (f *fakeGlobalRuleClient) UpsertHTTPLoggerGlobalRule(_ context.Context, namespace, name string, cfg HTTPLoggerConfig) error {
 	f.upserts = append(f.upserts, globalRuleUpsert{namespace: namespace, name: name, config: cfg})
 	return nil
@@ -32,6 +39,11 @@ func (f *fakeGlobalRuleClient) UpsertHTTPLoggerGlobalRule(_ context.Context, nam
 
 func (f *fakeGlobalRuleClient) DeleteManagedHTTPLoggerGlobalRules(_ context.Context, namespaces []string, name string) error {
 	f.deletes = append(f.deletes, globalRuleDelete{namespaces: append([]string(nil), namespaces...), name: name})
+	return nil
+}
+
+func (f *fakeGlobalRuleClient) DeleteManagedHTTPLoggerGlobalRulesExcept(_ context.Context, namespaces []string, name, keepNamespace string) error {
+	f.keep = append(f.keep, globalRuleKeepDelete{namespaces: append([]string(nil), namespaces...), name: name, keepNamespace: keepNamespace})
 	return nil
 }
 
@@ -104,6 +116,12 @@ func TestGlobalHTTPLoggerJobUpsertsRulesAndScansMappingsWhenReady(t *testing.T) 
 	if ruleClient.upserts[0].namespace != "team-ns" {
 		t.Fatalf("upsert namespace = %q; want team-ns", ruleClient.upserts[0].namespace)
 	}
+	if len(ruleClient.keep) != 1 {
+		t.Fatalf("duplicate cleanup calls = %#v; want one cleanup call", ruleClient.keep)
+	}
+	if ruleClient.keep[0].keepNamespace != "team-ns" {
+		t.Fatalf("cleanup keep namespace = %q; want team-ns", ruleClient.keep[0].keepNamespace)
+	}
 	if len(routeClient.updated) != 0 {
 		t.Fatalf("route updates = %d; want zero in global mode", len(routeClient.updated))
 	}
@@ -112,6 +130,48 @@ func TestGlobalHTTPLoggerJobUpsertsRulesAndScansMappingsWhenReady(t *testing.T) 
 	}
 	if store.routeMappings[0].AppID != "region-app-a" {
 		t.Fatalf("mapping = %#v; want region app id", store.routeMappings[0])
+	}
+}
+
+func TestGlobalHTTPLoggerJobUpsertsOnlyOneRuleAcrossNamespaces(t *testing.T) {
+	routeA := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"namespace": "team-a",
+			"name":      "route-a",
+			"labels":    map[string]interface{}{"creator": "Rainbond", "app_id": "app-a"},
+		},
+		"spec": map[string]interface{}{"http": []interface{}{map[string]interface{}{"name": "http-a"}}},
+	}}
+	routeB := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"namespace": "team-b",
+			"name":      "route-b",
+			"labels":    map[string]interface{}{"creator": "Rainbond", "app_id": "app-b"},
+		},
+		"spec": map[string]interface{}{"http": []interface{}{map[string]interface{}{"name": "http-b"}}},
+	}}
+	routeClient := &fakeRouteClient{routes: []*unstructured.Unstructured{routeB, routeA}}
+	ruleClient := &fakeGlobalRuleClient{}
+	job := GlobalHTTPLoggerJob{
+		RouteClient:    routeClient,
+		GlobalRules:    ruleClient,
+		Namespaces:     []string{""},
+		GlobalRuleName: "rainbond-gateway-monitoring-http-logger",
+		Config:         HTTPLoggerConfig{URI: "http://collector", Timeout: 3},
+		Ready:          func() bool { return true },
+	}
+
+	if err := job.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() unexpected error: %v", err)
+	}
+	if len(ruleClient.upserts) != 1 {
+		t.Fatalf("upserts = %#v; want exactly one global rule", ruleClient.upserts)
+	}
+	if ruleClient.upserts[0].namespace != "team-a" {
+		t.Fatalf("upsert namespace = %q; want deterministic first namespace team-a", ruleClient.upserts[0].namespace)
+	}
+	if len(ruleClient.keep) != 1 || ruleClient.keep[0].keepNamespace != "team-a" {
+		t.Fatalf("duplicate cleanup = %#v; want keep team-a", ruleClient.keep)
 	}
 }
 

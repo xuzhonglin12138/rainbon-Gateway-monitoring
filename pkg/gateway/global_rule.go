@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ var apisixGlobalRuleGVR = schema.GroupVersionResource{
 type GlobalRuleClient interface {
 	UpsertHTTPLoggerGlobalRule(ctx context.Context, namespace, name string, cfg HTTPLoggerConfig) error
 	DeleteManagedHTTPLoggerGlobalRules(ctx context.Context, namespaces []string, name string) error
+	DeleteManagedHTTPLoggerGlobalRulesExcept(ctx context.Context, namespaces []string, name, keepNamespace string) error
 }
 
 type DynamicGlobalRuleClient struct {
@@ -88,6 +90,14 @@ func (c *DynamicGlobalRuleClient) UpsertHTTPLoggerGlobalRule(ctx context.Context
 }
 
 func (c *DynamicGlobalRuleClient) DeleteManagedHTTPLoggerGlobalRules(ctx context.Context, namespaces []string, name string) error {
+	return c.deleteManagedHTTPLoggerGlobalRules(ctx, namespaces, name, "")
+}
+
+func (c *DynamicGlobalRuleClient) DeleteManagedHTTPLoggerGlobalRulesExcept(ctx context.Context, namespaces []string, name, keepNamespace string) error {
+	return c.deleteManagedHTTPLoggerGlobalRules(ctx, namespaces, name, strings.TrimSpace(keepNamespace))
+}
+
+func (c *DynamicGlobalRuleClient) deleteManagedHTTPLoggerGlobalRules(ctx context.Context, namespaces []string, name, keepNamespace string) error {
 	if c == nil || c.client == nil {
 		return fmt.Errorf("global rule client is required")
 	}
@@ -112,6 +122,9 @@ func (c *DynamicGlobalRuleClient) DeleteManagedHTTPLoggerGlobalRules(ctx context
 			itemNamespace := item.GetNamespace()
 			if itemNamespace == "" {
 				itemNamespace = namespace
+			}
+			if keepNamespace != "" && itemNamespace == keepNamespace {
+				continue
 			}
 			if err := c.client.Resource(apisixGlobalRuleGVR).Namespace(itemNamespace).Delete(ctx, item.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				return err
@@ -147,7 +160,7 @@ func (j *GlobalHTTPLoggerJob) RunOnce(ctx context.Context) error {
 	}
 
 	namespaces := normalizeGlobalRuleNamespaces(j.Namespaces)
-	groups := make(map[string]struct{})
+	discoveredRuleNamespaces := make(map[string]struct{})
 	for _, namespace := range namespaces {
 		routes, err := j.RouteClient.List(ctx, namespace)
 		if err != nil {
@@ -170,27 +183,33 @@ func (j *GlobalHTTPLoggerJob) RunOnce(ctx context.Context) error {
 			if ruleNamespace == metav1.NamespaceAll {
 				continue
 			}
-			groups[ruleNamespace] = struct{}{}
+			discoveredRuleNamespaces[ruleNamespace] = struct{}{}
 		}
 		if err := j.scanMappings(ctx, namespace); err != nil {
 			return err
 		}
 	}
 
-	for namespace := range groups {
+	ruleNamespace := j.resolveGlobalRuleNamespace(discoveredRuleNamespaces)
+	if ruleNamespace == "" {
 		if j.Logger != nil {
-			j.Logger.WithFields(logrus.Fields{
-				"namespace":     namespace,
-				"global_rule":   j.globalRuleName(),
-				"collector_uri": j.Config.URI,
-			}).Info("ensuring apisix global http-logger")
+			j.Logger.Info("no rainbond apisix routes discovered for global http-logger")
 		}
-		if err := j.GlobalRules.UpsertHTTPLoggerGlobalRule(ctx, namespace, j.globalRuleName(), j.Config); err != nil {
-			return fmt.Errorf("upsert apisix global rule %s/%s: %w", namespace, j.globalRuleName(), err)
-		}
+		return nil
 	}
-	if len(groups) == 0 && j.Logger != nil {
-		j.Logger.Info("no rainbond apisix routes discovered for global http-logger")
+
+	if err := j.GlobalRules.DeleteManagedHTTPLoggerGlobalRulesExcept(ctx, []string{metav1.NamespaceAll}, j.globalRuleName(), ruleNamespace); err != nil {
+		return fmt.Errorf("cleanup duplicate apisix global rules except %s/%s: %w", ruleNamespace, j.globalRuleName(), err)
+	}
+	if j.Logger != nil {
+		j.Logger.WithFields(logrus.Fields{
+			"namespace":     ruleNamespace,
+			"global_rule":   j.globalRuleName(),
+			"collector_uri": j.Config.URI,
+		}).Info("ensuring apisix global http-logger")
+	}
+	if err := j.GlobalRules.UpsertHTTPLoggerGlobalRule(ctx, ruleNamespace, j.globalRuleName(), j.Config); err != nil {
+		return fmt.Errorf("upsert apisix global rule %s/%s: %w", ruleNamespace, j.globalRuleName(), err)
 	}
 	return nil
 }
@@ -268,6 +287,27 @@ func (j *GlobalHTTPLoggerJob) globalRuleName() string {
 		return j.GlobalRuleName
 	}
 	return DefaultHTTPLoggerGlobalRuleName
+}
+
+func (j *GlobalHTTPLoggerJob) resolveGlobalRuleNamespace(discovered map[string]struct{}) string {
+	configured := strings.TrimSpace(j.GlobalRuleNamespace)
+	if configured != "" && configured != metav1.NamespaceAll {
+		return configured
+	}
+	if len(discovered) == 0 {
+		return ""
+	}
+	namespaces := make([]string, 0, len(discovered))
+	for namespace := range discovered {
+		if namespace != "" && namespace != metav1.NamespaceAll {
+			namespaces = append(namespaces, namespace)
+		}
+	}
+	sort.Strings(namespaces)
+	if len(namespaces) == 0 {
+		return ""
+	}
+	return namespaces[0]
 }
 
 func normalizeGlobalRuleNamespaces(namespaces []string) []string {

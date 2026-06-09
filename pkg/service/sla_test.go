@@ -46,8 +46,9 @@ func (f *fakePrometheusClient) QueryRange(ctx context.Context, query string, sta
 }
 
 type fakeSLAStore struct {
-	config model.SLAConfig
-	routes []string
+	config  model.SLAConfig
+	routes  []string
+	buckets []model.RouteGroupBucketPoint
 }
 
 func (f fakeSLAStore) GetSLAConfig(ctx context.Context, appID string, defaultTarget float64) (model.SLAConfig, error) {
@@ -59,6 +60,53 @@ func (f fakeSLAStore) GetSLAConfig(ctx context.Context, appID string, defaultTar
 
 func (f fakeSLAStore) GetAppPrometheusRoutes(ctx context.Context, appID string) ([]string, error) {
 	return f.routes, nil
+}
+
+func (f fakeSLAStore) ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
+	return f.buckets, nil
+}
+
+func TestSLAServicePrefersRouteGroupBucketsOverPrometheus(t *testing.T) {
+	client := &fakePrometheusClient{values: map[string]float64{
+		`sum(increase(apisix_http_status{route=~"route-a"}[5m]))`:             123.45,
+		`sum(increase(apisix_http_status{route=~"route-a",code=~"5.."}[5m]))`: 6.78,
+	}}
+	service := NewSLAService(SLAConfig{
+		Prometheus: client,
+		Store: fakeSLAStore{
+			config: model.SLAConfig{AppID: "app-a", Target: 0.999},
+			routes: []string{"route-a"},
+			buckets: []model.RouteGroupBucketPoint{
+				{Timestamp: 1710000001, Metric: model.RouteGroupMetric{RequestCount: 30, ErrorCount: 1}},
+				{Timestamp: 1710000002, Metric: model.RouteGroupMetric{RequestCount: 70, ErrorCount: 2}},
+			},
+		},
+		Target: 0.999,
+	})
+
+	result, err := service.GetAppSLA(context.Background(), "app-a", model.Window5m)
+	if err != nil {
+		t.Fatalf("GetAppSLA() unexpected error: %v", err)
+	}
+
+	if result.TotalRequests != 100 {
+		t.Fatalf("total = %v; want integer bucket total 100", result.TotalRequests)
+	}
+	if result.ErrorRequests != 3 {
+		t.Fatalf("errors = %v; want integer bucket errors 3", result.ErrorRequests)
+	}
+	if result.Current != 0.97 {
+		t.Fatalf("current = %v; want 0.97", result.Current)
+	}
+	if result.EvidenceLevel != "A" {
+		t.Fatalf("evidence = %q; want A", result.EvidenceLevel)
+	}
+	if result.PrometheusQuerySource != "route_group_bucket" {
+		t.Fatalf("source = %q; want route_group_bucket", result.PrometheusQuerySource)
+	}
+	if len(client.queries) != 0 {
+		t.Fatalf("prometheus queries = %#v; want no prometheus query when buckets are available", client.queries)
+	}
 }
 
 func TestSLAServiceComputesAvailabilityFromGateway5xx(t *testing.T) {

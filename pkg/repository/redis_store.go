@@ -858,6 +858,11 @@ func (s *RedisStore) SaveRouteMapping(ctx context.Context, mapping model.RouteMa
 			return err
 		}
 	}
+	if mapping.PrometheusRoute != "" {
+		if _, err := s.client.Do(ctx, "SADD", platformPrometheusRoutesKey(), mapping.PrometheusRoute); err != nil {
+			return err
+		}
+	}
 	if mapping.AppID != "" && mapping.RegionAppID != "" && mapping.AppID != mapping.RegionAppID {
 		if _, err := s.client.Do(ctx, "SADD", appAliasesKey(mapping.AppID), mapping.RegionAppID); err != nil {
 			return err
@@ -958,6 +963,14 @@ func (s *RedisStore) GetAppPrometheusRoutes(ctx context.Context, appID string) (
 	return stringSlice(value), nil
 }
 
+func (s *RedisStore) GetPlatformPrometheusRoutes(ctx context.Context) ([]string, error) {
+	value, err := s.client.Do(ctx, "SMEMBERS", platformPrometheusRoutesKey())
+	if err != nil {
+		return nil, err
+	}
+	return stringSlice(value), nil
+}
+
 func (s *RedisStore) ReplaceAppPrometheusRoutes(ctx context.Context, appID string, routes []string) error {
 	if appID == "" {
 		return fmt.Errorf("app_id is required")
@@ -970,7 +983,11 @@ func (s *RedisStore) ReplaceAppPrometheusRoutes(ctx context.Context, appID strin
 		return nil
 	}
 	args := append([]string{"SADD", key}, routes...)
-	_, err := s.client.Do(ctx, args...)
+	if _, err := s.client.Do(ctx, args...); err != nil {
+		return err
+	}
+	platformArgs := append([]string{"SADD", platformPrometheusRoutesKey()}, routes...)
+	_, err := s.client.Do(ctx, platformArgs...)
 	return err
 }
 
@@ -1066,6 +1083,10 @@ func routeGroupRulesKey(appID string) string {
 
 func appPrometheusRoutesKey(appID string) string {
 	return "nm:app:" + sanitizeKeyPart(appID) + ":prometheus-routes"
+}
+
+func platformPrometheusRoutesKey() string {
+	return "nm:platform:prometheus-routes"
 }
 
 func sanitizeKeyPart(value string) string {

@@ -1136,4 +1136,32 @@ func TestRedisStoreReplacesAppPrometheusRoutes(t *testing.T) {
 	if len(routes) != 2 || routes[0] != "route-a" || routes[1] != "route-b" {
 		t.Fatalf("routes = %#v; want route-a and route-b", routes)
 	}
+	platformRoutes, err := store.GetPlatformPrometheusRoutes(context.Background())
+	if err != nil {
+		t.Fatalf("GetPlatformPrometheusRoutes() unexpected error: %v", err)
+	}
+	if len(platformRoutes) != 2 || platformRoutes[0] != "route-a" || platformRoutes[1] != "route-b" {
+		t.Fatalf("platform routes = %#v; want route-a and route-b", platformRoutes)
+	}
+}
+
+func TestRedisStoreSaveRouteMappingIndexesPlatformPrometheusRoute(t *testing.T) {
+	client := &fakeRedisClient{}
+	store := NewRedisStore(client)
+
+	err := store.SaveRouteMapping(context.Background(), model.RouteMapping{
+		RouteID:         "route-id",
+		AppID:           "app-a",
+		PrometheusRoute: "route-a",
+	}, time.Minute)
+	if err != nil {
+		t.Fatalf("SaveRouteMapping() unexpected error: %v", err)
+	}
+	routes, err := store.GetPlatformPrometheusRoutes(context.Background())
+	if err != nil {
+		t.Fatalf("GetPlatformPrometheusRoutes() unexpected error: %v", err)
+	}
+	if len(routes) != 1 || routes[0] != "route-a" {
+		t.Fatalf("platform routes = %#v; want route-a", routes)
+	}
 }

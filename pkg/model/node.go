@@ -20,6 +20,7 @@ type PlatformNodeSummary struct {
 	P50LatencyMs           float64 `json:"p50_latency_ms"`
 	AvgLatencyMs           float64 `json:"avg_latency_ms"`
 	ErrorCount             float64 `json:"error_count"`
+	ErrorRate              float64 `json:"error_rate"`
 	EgressBytesPerSec      float64 `json:"egress_bytes_per_sec"`
 	CPURequestedCores      float64 `json:"cpu_requested_cores"`
 	CPUAllocatableCores    float64 `json:"cpu_allocatable_cores"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,10 +13,12 @@ import (
 )
 
 type fakeRouteGroupOverviewStore struct {
-	items   []model.RouteGroupItem
-	buckets []model.RouteGroupBucketPoint
-	scope   model.AggregateScope
-	window  model.Window
+	items          []model.RouteGroupItem
+	buckets        []model.RouteGroupBucketPoint
+	appRoutes      []string
+	platformRoutes []string
+	scope          model.AggregateScope
+	window         model.Window
 }
 
 type fakePlatformNodeProvider struct {
@@ -36,6 +39,14 @@ func (f *fakeRouteGroupOverviewStore) ListRouteGroupBucketPoints(_ context.Conte
 	f.scope = scope
 	f.window = window
 	return f.buckets, nil
+}
+
+func (f *fakeRouteGroupOverviewStore) GetAppPrometheusRoutes(_ context.Context, _ string) ([]string, error) {
+	return f.appRoutes, nil
+}
+
+func (f *fakeRouteGroupOverviewStore) GetPlatformPrometheusRoutes(_ context.Context) ([]string, error) {
+	return f.platformRoutes, nil
 }
 
 func findTrendPoint(points []model.OverviewTrendPoint, timestamp int64) (model.OverviewTrendPoint, bool) {
@@ -796,6 +807,9 @@ func TestOverviewServiceGetsPlatformNodeSummaries(t *testing.T) {
 	if nodes[0].ErrorCount != 8 {
 		t.Fatalf("error count = %v; want 8", nodes[0].ErrorCount)
 	}
+	if nodes[0].ErrorRate != 8.0/1200.0 {
+		t.Fatalf("error rate = %v; want %v", nodes[0].ErrorRate, 8.0/1200.0)
+	}
 	if nodes[0].EgressBytesPerSec != 4096 {
 		t.Fatalf("egress = %v; want 4096", nodes[0].EgressBytesPerSec)
 	}
@@ -827,8 +841,48 @@ func TestPlatformNodeAvgLatencyQueryKeepsApisixLatencyMilliseconds(t *testing.T)
 	if strings.Contains(query, "* 1000") {
 		t.Fatalf("latency query = %q; must not multiply APISIX latency histogram by 1000", query)
 	}
+	if strings.Contains(query, "clamp_min(sum by (k8s_node)") && strings.Contains(query, ", 1)") {
+		t.Fatalf("latency query = %q; must not clamp low-QPS latency counts to 1", query)
+	}
 	if !strings.Contains(query, "apisix_http_latency_sum") || !strings.Contains(query, "apisix_http_latency_count") {
 		t.Fatalf("latency query = %q; want APISIX latency histogram average", query)
+	}
+}
+
+func TestOverviewServiceFiltersPlatformNodeMetricsByKnownRoutes(t *testing.T) {
+	store := &fakeRouteGroupOverviewStore{platformRoutes: []string{"team_app-8080.example.test_abcd"}}
+	routeMatcher := prometheusRouteMatcher(store.platformRoutes)
+	requestsQuery := platformNodeRequestsQuery(model.Window5m, routeMatcher)
+	latencyQuery := platformNodeAvgLatencyQuery(model.Window5m, routeMatcher)
+	errorsQuery := platformNodeErrorsQuery(model.Window5m, routeMatcher)
+	egressQuery := platformNodeEgressQuery(model.Window5m, routeMatcher)
+	client := &fakePrometheusClient{
+		vectors: map[string][]promclient.Sample{
+			requestsQuery: {{Metric: map[string]string{"k8s_node": "node-a"}, Value: 10}},
+			latencyQuery:  {{Metric: map[string]string{"k8s_node": "node-a"}, Value: 25}},
+			errorsQuery:   {{Metric: map[string]string{"k8s_node": "node-a"}, Value: 2}},
+			egressQuery:   {{Metric: map[string]string{"k8s_node": "node-a"}, Value: 128}},
+		},
+	}
+	service := NewOverviewService(OverviewConfig{
+		Prometheus: client,
+		Store:      store,
+	})
+
+	nodes, err := service.GetPlatformNodeSummaries(context.Background(), model.Window5m)
+	if err != nil {
+		t.Fatalf("GetPlatformNodeSummaries() unexpected error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes length = %d; want 1", len(nodes))
+	}
+	if nodes[0].RequestCount != 10 || nodes[0].ErrorRate != 0.2 {
+		t.Fatalf("node metrics = %+v; want request 10 and error rate 0.2", nodes[0])
+	}
+	for _, query := range client.queries {
+		if !strings.Contains(query, `route=~"team_app-8080\.example\.test_abcd"`) {
+			t.Fatalf("query = %q; want platform route filter", query)
+		}
 	}
 }
 

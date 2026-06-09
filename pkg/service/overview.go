@@ -31,6 +31,10 @@ type routeIndexStore interface {
 	GetAppPrometheusRoutes(ctx context.Context, appID string) ([]string, error)
 }
 
+type platformRouteIndexStore interface {
+	GetPlatformPrometheusRoutes(ctx context.Context) ([]string, error)
+}
+
 type routeGroupOverviewStore interface {
 	ListRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error)
 	ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error)
@@ -402,19 +406,23 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 	if s.prometheus == nil {
 		return nil, fmt.Errorf("prometheus client is required")
 	}
-	requests, err := s.prometheus.QueryInstant(ctx, platformNodeRequestsQuery(window))
+	routeMatcher, err := s.platformRouteMatcher(ctx)
 	if err != nil {
 		return nil, err
 	}
-	latencies, err := s.prometheus.QueryInstant(ctx, platformNodeAvgLatencyQuery(window))
+	requests, err := s.prometheus.QueryInstant(ctx, platformNodeRequestsQuery(window, routeMatcher))
 	if err != nil {
 		return nil, err
 	}
-	errors, err := s.prometheus.QueryInstant(ctx, platformNodeErrorsQuery(window))
+	latencies, err := s.prometheus.QueryInstant(ctx, platformNodeAvgLatencyQuery(window, routeMatcher))
 	if err != nil {
 		return nil, err
 	}
-	egress, err := s.prometheus.QueryInstant(ctx, platformNodeEgressQuery(window))
+	errors, err := s.prometheus.QueryInstant(ctx, platformNodeErrorsQuery(window, routeMatcher))
+	if err != nil {
+		return nil, err
+	}
+	egress, err := s.prometheus.QueryInstant(ctx, platformNodeEgressQuery(window, routeMatcher))
 	if err != nil {
 		return nil, err
 	}
@@ -462,6 +470,11 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 	for _, sample := range egress {
 		ensure(sample).EgressBytesPerSec = sample.Value
 	}
+	for _, node := range nodes {
+		if node.RequestCount > 0 {
+			node.ErrorRate = node.ErrorCount / node.RequestCount
+		}
+	}
 
 	result := make([]model.PlatformNodeSummary, 0, len(nodes))
 	for _, node := range nodes {
@@ -490,22 +503,42 @@ func platformNodeSummaryFromNode(node model.PlatformNode) *model.PlatformNodeSum
 	}
 }
 
-func platformNodeRequestsQuery(window model.Window) string {
-	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{node!=""}[%s])`, window)))
+func platformNodeRequestsQuery(window model.Window, routeMatcher ...string) string {
+	selector := apisixNodeSelector(firstOptionalString(routeMatcher))
+	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{%s}[%s])`, selector, window)))
 }
 
-func platformNodeAvgLatencyQuery(window model.Window) string {
-	sumQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_sum{node!=""}[%s])`, window))
-	countQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_count{node!=""}[%s])`, window))
-	return fmt.Sprintf(`sum by (k8s_node) (%s) / clamp_min(sum by (k8s_node) (%s), 1)`, sumQuery, countQuery)
+func platformNodeAvgLatencyQuery(window model.Window, routeMatcher ...string) string {
+	selector := apisixNodeSelector(firstOptionalString(routeMatcher))
+	sumQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_sum{%s}[%s])`, selector, window))
+	countQuery := apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_http_latency_count{%s}[%s])`, selector, window))
+	return fmt.Sprintf(`sum by (k8s_node) (%s) / clamp_min(sum by (k8s_node) (%s), 0.001)`, sumQuery, countQuery)
 }
 
-func platformNodeErrorsQuery(window model.Window) string {
-	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{node!="",code=~"5.."}[%s])`, window)))
+func platformNodeErrorsQuery(window model.Window, routeMatcher ...string) string {
+	selector := apisixNodeSelector(firstOptionalString(routeMatcher), `code=~"5.."`)
+	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`increase(apisix_http_status{%s}[%s])`, selector, window)))
 }
 
-func platformNodeEgressQuery(window model.Window) string {
-	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_bandwidth{type="egress",node!=""}[%s])`, window)))
+func platformNodeEgressQuery(window model.Window, routeMatcher ...string) string {
+	selector := apisixNodeSelector(firstOptionalString(routeMatcher), `type="egress"`)
+	return fmt.Sprintf(`sum by (k8s_node) (%s)`, apisixPodNodeJoin(fmt.Sprintf(`rate(apisix_bandwidth{%s}[%s])`, selector, window)))
+}
+
+func apisixNodeSelector(routeMatcher string, labels ...string) string {
+	parts := []string{`node!=""`}
+	if routeMatcher != "" {
+		parts = append(parts, prometheusRouteLabel(routeMatcher))
+	}
+	parts = append(parts, labels...)
+	return strings.Join(parts, ",")
+}
+
+func firstOptionalString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func apisixPodNodeJoin(expr string) string {
@@ -736,6 +769,25 @@ func (s *OverviewService) appRouteMatcher(ctx context.Context, appID string) (st
 		routeMatcher = prometheusRouteMatcher(routes)
 	}
 	return routeMatcher, nil
+}
+
+func (s *OverviewService) platformRouteMatcher(ctx context.Context) (string, error) {
+	store, ok := s.store.(platformRouteIndexStore)
+	if !ok || store == nil {
+		s.logQueryContext("using unfiltered platform node metrics because platform route index store is nil", model.AggregateScope{Kind: model.ScopePlatform}, "", nil)
+		return "", nil
+	}
+	routes, err := store.GetPlatformPrometheusRoutes(ctx)
+	if err != nil {
+		return "", err
+	}
+	s.logQueryContext("loaded platform prometheus routes from route index", model.AggregateScope{Kind: model.ScopePlatform}, "", logrus.Fields{
+		"route_count": len(routes),
+	})
+	if len(routes) == 0 {
+		return "", nil
+	}
+	return prometheusRouteMatcher(routes), nil
 }
 
 func (s *OverviewService) logQueryContext(message string, scope model.AggregateScope, window model.Window, fields logrus.Fields) {

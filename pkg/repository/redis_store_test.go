@@ -662,6 +662,52 @@ func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testin
 	}
 }
 
+func TestRedisStoreListAppsAtUsesExplicitWindowEndTime(t *testing.T) {
+	client := &fakeRedisClient{
+		members: []interface{}{"app:app-a"},
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:route-group-buckets": {
+				"nm:app:app-a:5m:route-group:_api_inside:bucket:1710000000",
+				"nm:app:app-a:5m:route-group:_api_after_end:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:app-a:5m:route-group:_api_inside:bucket:1710000000": {
+				"route_group", "/api/inside",
+				"request_count", "70",
+				"latency_count", "70",
+				"latency_sum_ms", "700",
+				"app_id", "app-a",
+			},
+			"nm:app:app-a:5m:route-group:_api_after_end:bucket:1710000005": {
+				"route_group", "/api/after-end",
+				"request_count", "900",
+				"latency_count", "900",
+				"latency_sum_ms", "9000",
+				"app_id", "app-a",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListAppsAt(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window5m, time.Unix(1710000000, 0), 50, "throughput")
+	if err != nil {
+		t.Fatalf("ListAppsAt() unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items length = %d; want 1", len(items))
+	}
+	if items[0].RequestCount != 70 {
+		t.Fatalf("request count = %d; want only buckets up to explicit end_time", items[0].RequestCount)
+	}
+	if items[0].TopLatencyRouteGroup == "/api/after-end" {
+		t.Fatalf("top routes = %#v; want buckets after explicit end_time excluded", items[0])
+	}
+}
+
 func TestRedisStoreListAppsDeduplicatesCanonicalAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		zrangeByKey: map[string][]interface{}{

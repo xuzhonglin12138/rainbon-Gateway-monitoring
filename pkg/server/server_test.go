@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/license"
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
@@ -46,6 +47,8 @@ type fakeRouteGroupQueryStore struct {
 	apps       []model.AppTrafficItem
 	components []model.AppComponentSummary
 	meta       model.QueryMeta
+	atEndTime  time.Time
+	atCalled   bool
 }
 
 func (f fakeRouteGroupQueryStore) ListRouteGroups(_ context.Context, _ model.AggregateScope, _ model.Window, _ int, _ string) ([]model.RouteGroupItem, error) {
@@ -56,7 +59,17 @@ func (f fakeRouteGroupQueryStore) ListApps(_ context.Context, _ model.AggregateS
 	return f.apps, nil
 }
 
+func (f *fakeRouteGroupQueryStore) ListAppsAt(_ context.Context, _ model.AggregateScope, _ model.Window, endTime time.Time, _ int, _ string) ([]model.AppTrafficItem, error) {
+	f.atCalled = true
+	f.atEndTime = endTime
+	return f.apps, nil
+}
+
 func (f fakeRouteGroupQueryStore) GetRouteGroupSnapshotMeta(_ context.Context, _ model.AggregateScope, _ model.Window, _ string) (model.QueryMeta, error) {
+	return f.meta, nil
+}
+
+func (f fakeRouteGroupQueryStore) GetAppTrafficSnapshotMeta(_ context.Context, _ model.AggregateScope, _ model.Window, _ string) (model.QueryMeta, error) {
 	return f.meta, nil
 }
 
@@ -468,6 +481,33 @@ func TestServerHandlesPlatformAppTopThroughput(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body.String(), `"window":"30m"`) || !strings.Contains(resp.Body.String(), `"freshness_seconds":9`) {
 		t.Fatalf("response body = %s; want selected window meta", resp.Body.String())
+	}
+}
+
+func TestServerPassesEndTimeToPlatformAppTop(t *testing.T) {
+	store := &fakeRouteGroupQueryStore{
+		apps: []model.AppTrafficItem{{
+			AppID:        "app-a",
+			RequestCount: 70,
+		}},
+		meta: model.QueryMeta{Window: model.Window5m, FreshnessSeconds: 33, Stale: true},
+	}
+	server := New(Config{QueryStore: store})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/apps/top-throughput?window=5m&end_time=1710000000", nil)
+	resp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s; want 200", resp.Code, resp.Body.String())
+	}
+	if !store.atCalled {
+		t.Fatalf("ListAppsAt was not called")
+	}
+	if got := store.atEndTime.Unix(); got != 1710000000 {
+		t.Fatalf("end time = %d; want 1710000000", got)
+	}
+	if strings.Contains(resp.Body.String(), `"freshness_seconds":33`) || strings.Contains(resp.Body.String(), `"stale":true`) {
+		t.Fatalf("response body = %s; want explicit end_time query to bypass latest snapshot meta", resp.Body.String())
 	}
 }
 

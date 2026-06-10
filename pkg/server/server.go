@@ -54,12 +54,24 @@ type RouteGroupQueryStore interface {
 	ListRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error)
 }
 
+type RouteGroupAtQueryStore interface {
+	ListRouteGroupsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.RouteGroupItem, error)
+}
+
 type AppTrafficQueryStore interface {
 	ListApps(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.AppTrafficItem, error)
 }
 
+type AppTrafficAtQueryStore interface {
+	ListAppsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.AppTrafficItem, error)
+}
+
 type AppComponentSummaryStore interface {
 	ListAppComponentSummaries(ctx context.Context, appID string, window model.Window, limit int) ([]model.AppComponentSummary, error)
+}
+
+type AppComponentSummaryAtStore interface {
+	ListAppComponentSummariesAt(ctx context.Context, appID string, window model.Window, endTime time.Time, limit int) ([]model.AppComponentSummary, error)
 }
 
 type RouteGroupSnapshotMetaStore interface {
@@ -74,6 +86,10 @@ type SLAService interface {
 	GetAppSLA(ctx context.Context, appID string, window model.Window) (model.SLAStatus, error)
 }
 
+type SLAAtService interface {
+	GetAppSLAAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.SLAStatus, error)
+}
+
 type OverviewService interface {
 	GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error)
 	GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error)
@@ -83,6 +99,15 @@ type OverviewService interface {
 	GetComponentRealtimeTrend(ctx context.Context, componentID string, window model.Window) (model.OverviewTrend, error)
 	GetPlatformNodeSummaries(ctx context.Context, window model.Window) ([]model.PlatformNodeSummary, error)
 	GetPlatformNodeDetail(ctx context.Context, nodeName string, window model.Window) (model.PlatformNodeDetail, error)
+}
+
+type OverviewAtService interface {
+	GetPlatformOverviewAt(ctx context.Context, window model.Window, endTime time.Time) (model.Overview, error)
+	GetAppOverviewAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.Overview, error)
+	GetComponentOverviewAt(ctx context.Context, componentID string, window model.Window, endTime time.Time) (model.Overview, error)
+	GetPlatformRealtimeTrendAt(ctx context.Context, window model.Window, endTime time.Time) (model.OverviewTrend, error)
+	GetAppRealtimeTrendAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.OverviewTrend, error)
+	GetComponentRealtimeTrendAt(ctx context.Context, componentID string, window model.Window, endTime time.Time) (model.OverviewTrend, error)
 }
 
 type ConfigStore interface {
@@ -303,7 +328,7 @@ func (s *Server) handlePlatformNodeSummary(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, _, _, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -346,7 +371,7 @@ func (s *Server) handlePlatformNodeRoutes(w http.ResponseWriter, r *http.Request
 		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, _, _, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -475,7 +500,7 @@ func (s *Server) handleAppSLA(w http.ResponseWriter, r *http.Request, appID stri
 		http.Error(w, "sla service is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, endTime, hasEndTime, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -484,7 +509,16 @@ func (s *Server) handleAppSLA(w http.ResponseWriter, r *http.Request, appID stri
 		"app_id": appID,
 		"window": window,
 	}).Info("querying app sla")
-	status, err := s.slaService.GetAppSLA(r.Context(), appID, window)
+	var status model.SLAStatus
+	if hasEndTime {
+		if atService, ok := s.slaService.(SLAAtService); ok {
+			status, err = atService.GetAppSLAAt(r.Context(), appID, window, endTime)
+		} else {
+			status, err = s.slaService.GetAppSLA(r.Context(), appID, window)
+		}
+	} else {
+		status, err = s.slaService.GetAppSLA(r.Context(), appID, window)
+	}
 	if err != nil {
 		s.logger.WithError(err).WithFields(logrus.Fields{
 			"app_id": appID,
@@ -720,7 +754,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, scope mo
 		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, endTime, hasEndTime, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -733,11 +767,35 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, scope mo
 	var overview model.Overview
 	switch scope.Kind {
 	case model.ScopePlatform:
-		overview, err = s.overviewService.GetPlatformOverview(r.Context(), window)
+		if hasEndTime {
+			if atService, ok := s.overviewService.(OverviewAtService); ok {
+				overview, err = atService.GetPlatformOverviewAt(r.Context(), window, endTime)
+			} else {
+				overview, err = s.overviewService.GetPlatformOverview(r.Context(), window)
+			}
+		} else {
+			overview, err = s.overviewService.GetPlatformOverview(r.Context(), window)
+		}
 	case model.ScopeApp:
-		overview, err = s.overviewService.GetAppOverview(r.Context(), scope.ID, window)
+		if hasEndTime {
+			if atService, ok := s.overviewService.(OverviewAtService); ok {
+				overview, err = atService.GetAppOverviewAt(r.Context(), scope.ID, window, endTime)
+			} else {
+				overview, err = s.overviewService.GetAppOverview(r.Context(), scope.ID, window)
+			}
+		} else {
+			overview, err = s.overviewService.GetAppOverview(r.Context(), scope.ID, window)
+		}
 	case model.ScopeComponent:
-		overview, err = s.overviewService.GetComponentOverview(r.Context(), scope.ID, window)
+		if hasEndTime {
+			if atService, ok := s.overviewService.(OverviewAtService); ok {
+				overview, err = atService.GetComponentOverviewAt(r.Context(), scope.ID, window, endTime)
+			} else {
+				overview, err = s.overviewService.GetComponentOverview(r.Context(), scope.ID, window)
+			}
+		} else {
+			overview, err = s.overviewService.GetComponentOverview(r.Context(), scope.ID, window)
+		}
 	default:
 		err = fmt.Errorf("unsupported overview scope %s", scope.Kind)
 	}
@@ -778,7 +836,7 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 		http.Error(w, "overview service is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, endTime, hasEndTime, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -793,11 +851,35 @@ func (s *Server) handleOverviewTrend(w http.ResponseWriter, r *http.Request, sco
 	)
 	switch scope.Kind {
 	case model.ScopePlatform:
-		trend, err = s.overviewService.GetPlatformRealtimeTrend(r.Context(), window)
+		if hasEndTime {
+			if atService, ok := s.overviewService.(OverviewAtService); ok {
+				trend, err = atService.GetPlatformRealtimeTrendAt(r.Context(), window, endTime)
+			} else {
+				trend, err = s.overviewService.GetPlatformRealtimeTrend(r.Context(), window)
+			}
+		} else {
+			trend, err = s.overviewService.GetPlatformRealtimeTrend(r.Context(), window)
+		}
 	case model.ScopeApp:
-		trend, err = s.overviewService.GetAppRealtimeTrend(r.Context(), scope.ID, window)
+		if hasEndTime {
+			if atService, ok := s.overviewService.(OverviewAtService); ok {
+				trend, err = atService.GetAppRealtimeTrendAt(r.Context(), scope.ID, window, endTime)
+			} else {
+				trend, err = s.overviewService.GetAppRealtimeTrend(r.Context(), scope.ID, window)
+			}
+		} else {
+			trend, err = s.overviewService.GetAppRealtimeTrend(r.Context(), scope.ID, window)
+		}
 	case model.ScopeComponent:
-		trend, err = s.overviewService.GetComponentRealtimeTrend(r.Context(), scope.ID, window)
+		if hasEndTime {
+			if atService, ok := s.overviewService.(OverviewAtService); ok {
+				trend, err = atService.GetComponentRealtimeTrendAt(r.Context(), scope.ID, window, endTime)
+			} else {
+				trend, err = s.overviewService.GetComponentRealtimeTrend(r.Context(), scope.ID, window)
+			}
+		} else {
+			trend, err = s.overviewService.GetComponentRealtimeTrend(r.Context(), scope.ID, window)
+		}
 	default:
 		err = fmt.Errorf("unsupported overview trend scope %s", scope.Kind)
 	}
@@ -891,7 +973,7 @@ func (s *Server) handleAppComponentSummary(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "component summary store is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, endTime, hasEndTime, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -902,7 +984,16 @@ func (s *Server) handleAppComponentSummary(w http.ResponseWriter, r *http.Reques
 		"window": window,
 		"limit":  limit,
 	}).Info("querying app component summaries")
-	items, err := store.ListAppComponentSummaries(r.Context(), appID, window, limit)
+	var items []model.AppComponentSummary
+	if hasEndTime {
+		if atStore, ok := store.(AppComponentSummaryAtStore); ok {
+			items, err = atStore.ListAppComponentSummariesAt(r.Context(), appID, window, endTime, limit)
+		} else {
+			items, err = store.ListAppComponentSummaries(r.Context(), appID, window, limit)
+		}
+	} else {
+		items, err = store.ListAppComponentSummaries(r.Context(), appID, window, limit)
+	}
 	if err != nil {
 		s.logger.WithError(err).WithFields(logrus.Fields{
 			"app_id": appID,
@@ -936,7 +1027,7 @@ func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope m
 		http.Error(w, "route group store is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, endTime, hasEndTime, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -949,7 +1040,16 @@ func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope m
 		"limit":      limit,
 		"sort_by":    sortBy,
 	}).Info("querying route group top")
-	items, err := s.queryStore.ListRouteGroups(r.Context(), scope, window, limit, sortBy)
+	var items []model.RouteGroupItem
+	if hasEndTime {
+		if atStore, ok := s.queryStore.(RouteGroupAtQueryStore); ok {
+			items, err = atStore.ListRouteGroupsAt(r.Context(), scope, window, endTime, limit, sortBy)
+		} else {
+			items, err = s.queryStore.ListRouteGroups(r.Context(), scope, window, limit, sortBy)
+		}
+	} else {
+		items, err = s.queryStore.ListRouteGroups(r.Context(), scope, window, limit, sortBy)
+	}
 	if err != nil {
 		s.logger.WithError(err).WithFields(logrus.Fields{
 			"scope_kind": scope.Kind,
@@ -970,9 +1070,11 @@ func (s *Server) handleTopRoutes(w http.ResponseWriter, r *http.Request, scope m
 		return
 	}
 	meta := model.QueryMeta{Window: window}
-	if metaStore, ok := s.queryStore.(RouteGroupSnapshotMetaStore); ok {
-		if snapshotMeta, err := metaStore.GetRouteGroupSnapshotMeta(r.Context(), scope, window, sortBy); err == nil {
-			meta = snapshotMeta
+	if !hasEndTime {
+		if metaStore, ok := s.queryStore.(RouteGroupSnapshotMetaStore); ok {
+			if snapshotMeta, err := metaStore.GetRouteGroupSnapshotMeta(r.Context(), scope, window, sortBy); err == nil {
+				meta = snapshotMeta
+			}
 		}
 	}
 	s.logger.WithFields(logrus.Fields{
@@ -1007,7 +1109,7 @@ func (s *Server) handleTopApps(w http.ResponseWriter, r *http.Request, scope mod
 		http.Error(w, "app traffic store is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	window, endTime, hasEndTime, err := parseWindowAndEndTime(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
@@ -1020,7 +1122,16 @@ func (s *Server) handleTopApps(w http.ResponseWriter, r *http.Request, scope mod
 		"limit":      limit,
 		"sort_by":    sortBy,
 	}).Info("querying app traffic top")
-	items, err := store.ListApps(r.Context(), scope, window, limit, sortBy)
+	var items []model.AppTrafficItem
+	if hasEndTime {
+		if atStore, ok := store.(AppTrafficAtQueryStore); ok {
+			items, err = atStore.ListAppsAt(r.Context(), scope, window, endTime, limit, sortBy)
+		} else {
+			items, err = store.ListApps(r.Context(), scope, window, limit, sortBy)
+		}
+	} else {
+		items, err = store.ListApps(r.Context(), scope, window, limit, sortBy)
+	}
 	if err != nil {
 		s.logger.WithError(err).WithFields(logrus.Fields{
 			"scope_kind": scope.Kind,
@@ -1040,10 +1151,12 @@ func (s *Server) handleTopApps(w http.ResponseWriter, r *http.Request, scope mod
 		items = []model.AppTrafficItem{}
 	}
 	meta := model.QueryMeta{Window: window}
-	if metaStore, ok := s.queryStore.(AppTrafficSnapshotMetaStore); ok {
-		if snapshotMeta, err := metaStore.GetAppTrafficSnapshotMeta(r.Context(), scope, window, sortBy); err == nil {
-			meta = snapshotMeta
-			meta.Window = window
+	if !hasEndTime {
+		if metaStore, ok := s.queryStore.(AppTrafficSnapshotMetaStore); ok {
+			if snapshotMeta, err := metaStore.GetAppTrafficSnapshotMeta(r.Context(), scope, window, sortBy); err == nil {
+				meta = snapshotMeta
+				meta.Window = window
+			}
 		}
 	}
 	s.logger.WithFields(logrus.Fields{
@@ -1109,6 +1222,25 @@ func parseLimit(raw string, fallback int) int {
 		return 200
 	}
 	return value
+}
+
+func parseWindowAndEndTime(r *http.Request) (model.Window, time.Time, bool, error) {
+	window, err := model.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	rawEndTime := strings.TrimSpace(r.URL.Query().Get("end_time"))
+	if rawEndTime == "" {
+		return window, time.Time{}, false, nil
+	}
+	unixValue, err := strconv.ParseInt(rawEndTime, 10, 64)
+	if err != nil || unixValue <= 0 {
+		return "", time.Time{}, false, fmt.Errorf("invalid end_time %q", rawEndTime)
+	}
+	if unixValue > 1_000_000_000_000 {
+		unixValue = unixValue / 1000
+	}
+	return window, time.Unix(unixValue, 0), true, nil
 }
 
 func validateRouteGroupRules(rules []model.RouteGroupRule) error {

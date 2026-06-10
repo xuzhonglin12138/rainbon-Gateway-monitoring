@@ -879,8 +879,9 @@ func TestOverviewServiceFiltersPlatformNodeMetricsByKnownRoutes(t *testing.T) {
 	if nodes[0].RequestCount != 10 || nodes[0].ErrorRate != 0.2 {
 		t.Fatalf("node metrics = %+v; want request 10 and error rate 0.2", nodes[0])
 	}
+	wantRouteLabel := prometheusRouteLabel(routeMatcher)
 	for _, query := range client.queries {
-		if !strings.Contains(query, `route=~"team_app-8080\.example\.test_abcd"`) {
+		if !strings.Contains(query, wantRouteLabel) {
 			t.Fatalf("query = %q; want platform route filter", query)
 		}
 	}

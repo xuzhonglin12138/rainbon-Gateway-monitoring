@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/goodrain/rainbond-plugin-template/pkg/model"
 	"github.com/sirupsen/logrus"
@@ -31,6 +32,10 @@ type SLABucketStore interface {
 	ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error)
 }
 
+type SLABucketAtStore interface {
+	ListRouteGroupBucketPointsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) ([]model.RouteGroupBucketPoint, error)
+}
+
 type SLAService struct {
 	prometheus  PrometheusScalarClient
 	store       SLAStore
@@ -51,6 +56,14 @@ func NewSLAService(cfg SLAConfig) *SLAService {
 }
 
 func (s *SLAService) GetAppSLA(ctx context.Context, appID string, window model.Window) (model.SLAStatus, error) {
+	return s.getAppSLA(ctx, appID, window, time.Time{})
+}
+
+func (s *SLAService) GetAppSLAAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.SLAStatus, error) {
+	return s.getAppSLA(ctx, appID, window, endTime)
+}
+
+func (s *SLAService) getAppSLA(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.SLAStatus, error) {
 	target := s.target
 	routeMatcher := regexp.QuoteMeta(appID) + ".*"
 	if s.store != nil {
@@ -61,7 +74,7 @@ func (s *SLAService) GetAppSLA(ctx context.Context, appID string, window model.W
 		target = cfg.Target
 	}
 
-	if status, ok, err := s.getAppSLAFromBuckets(ctx, appID, window, target); err != nil {
+	if status, ok, err := s.getAppSLAFromBucketsAt(ctx, appID, window, endTime, target); err != nil {
 		return model.SLAStatus{}, err
 	} else if ok {
 		return status, nil
@@ -124,11 +137,28 @@ func (s *SLAService) GetAppSLA(ctx context.Context, appID string, window model.W
 }
 
 func (s *SLAService) getAppSLAFromBuckets(ctx context.Context, appID string, window model.Window, target float64) (model.SLAStatus, bool, error) {
+	return s.getAppSLAFromBucketsAt(ctx, appID, window, time.Time{}, target)
+}
+
+func (s *SLAService) getAppSLAFromBucketsAt(ctx context.Context, appID string, window model.Window, endTime time.Time, target float64) (model.SLAStatus, bool, error) {
 	if s.bucketStore == nil {
 		return model.SLAStatus{}, false, nil
 	}
 
-	points, err := s.bucketStore.ListRouteGroupBucketPoints(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window)
+	var (
+		points []model.RouteGroupBucketPoint
+		err    error
+	)
+	if !endTime.IsZero() {
+		atStore, ok := s.bucketStore.(SLABucketAtStore)
+		if !ok {
+			points, err = s.bucketStore.ListRouteGroupBucketPoints(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window)
+		} else {
+			points, err = atStore.ListRouteGroupBucketPointsAt(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window, endTime)
+		}
+	} else {
+		points, err = s.bucketStore.ListRouteGroupBucketPoints(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window)
+	}
 	if err != nil {
 		return model.SLAStatus{}, false, err
 	}

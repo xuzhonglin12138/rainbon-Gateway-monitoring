@@ -133,7 +133,7 @@ func (s *RedisStore) ListRouteGroups(ctx context.Context, scope model.AggregateS
 		limit = 50
 	}
 	if scope.Kind == model.ScopeApp {
-		return s.aggregateRouteGroupsForApp(ctx, scope.ID, window, limit, sortBy)
+		return s.aggregateRouteGroupsForAppAt(ctx, scope.ID, window, s.now(), limit, sortBy)
 	}
 	value, err := s.client.Do(ctx, "GET", routeGroupSnapshotKey(scope, window, sortBy))
 	if err != nil {
@@ -156,11 +156,25 @@ func (s *RedisStore) ListRouteGroups(ctx context.Context, scope model.AggregateS
 	return items, nil
 }
 
-func (s *RedisStore) ListAppComponentSummaries(ctx context.Context, appID string, window model.Window, limit int) ([]model.AppComponentSummary, error) {
+func (s *RedisStore) ListRouteGroupsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.RouteGroupItem, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	metrics, err := s.aggregateComponentMetricsForApp(ctx, appID, window)
+	if scope.Kind == model.ScopeApp {
+		return s.aggregateRouteGroupsForAppAt(ctx, scope.ID, window, endTime, limit, sortBy)
+	}
+	return s.aggregateRouteGroupsAt(ctx, scope, window, endTime, limit, sortBy)
+}
+
+func (s *RedisStore) ListAppComponentSummaries(ctx context.Context, appID string, window model.Window, limit int) ([]model.AppComponentSummary, error) {
+	return s.ListAppComponentSummariesAt(ctx, appID, window, s.now(), limit)
+}
+
+func (s *RedisStore) ListAppComponentSummariesAt(ctx context.Context, appID string, window model.Window, endTime time.Time, limit int) ([]model.AppComponentSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	metrics, err := s.aggregateComponentMetricsForAppAt(ctx, appID, window, endTime)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +217,18 @@ func (s *RedisStore) ListApps(ctx context.Context, scope model.AggregateScope, w
 			return items, nil
 		}
 	}
-	metrics, routeMetrics, err := s.aggregateAppMetrics(ctx, scope, window)
+	metrics, routeMetrics, err := s.aggregateAppMetricsAt(ctx, scope, window, s.now())
+	if err != nil {
+		return nil, err
+	}
+	return appTrafficItemsFromMetrics(metrics, routeMetrics, window, limit, sortBy), nil
+}
+
+func (s *RedisStore) ListAppsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.AppTrafficItem, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	metrics, routeMetrics, err := s.aggregateAppMetricsAt(ctx, scope, window, endTime)
 	if err != nil {
 		return nil, err
 	}
@@ -254,14 +279,22 @@ func appTrafficItemsFromMetrics(metrics map[string]model.RouteGroupMetric, route
 }
 
 func (s *RedisStore) ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
+	return s.ListRouteGroupBucketPointsAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) ListRouteGroupBucketPointsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) ([]model.RouteGroupBucketPoint, error) {
 	if scope.Kind == model.ScopeApp {
-		return s.listRouteGroupBucketPointsForApp(ctx, scope.ID, window)
+		return s.listRouteGroupBucketPointsForAppAt(ctx, scope.ID, window, endTime)
 	}
-	return s.listRouteGroupBucketPointsForScope(ctx, scope, window)
+	return s.listRouteGroupBucketPointsForScopeAt(ctx, scope, window, endTime)
 }
 
 func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error) {
-	metrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+	return s.listRouteGroupBucketPointsForScopeAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) listRouteGroupBucketPointsForScopeAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) ([]model.RouteGroupBucketPoint, error) {
+	metrics, err := s.listRouteGroupBucketMetricsForScopeAt(ctx, scope, window, endTime)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +302,11 @@ func (s *RedisStore) listRouteGroupBucketPointsForScope(ctx context.Context, sco
 }
 
 func (s *RedisStore) listRouteGroupBucketMetricsForScope(ctx context.Context, scope model.AggregateScope, window model.Window) ([]routeGroupBucketMetric, error) {
-	minBucket, maxBucket := bucketWindowBounds(s.now(), window)
+	return s.listRouteGroupBucketMetricsForScopeAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) listRouteGroupBucketMetricsForScopeAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) ([]routeGroupBucketMetric, error) {
+	minBucket, maxBucket := bucketWindowBounds(endTime, window)
 	keysValue, err := s.client.Do(ctx, "ZRANGEBYSCORE", routeGroupBucketIndexKey(scope), strconv.FormatInt(minBucket, 10), strconv.FormatInt(maxBucket, 10))
 	if err != nil {
 		return nil, err
@@ -344,13 +381,17 @@ func (s *RedisStore) hgetallMany(ctx context.Context, keys []string) (map[string
 }
 
 func (s *RedisStore) listRouteGroupBucketPointsForApp(ctx context.Context, appID string, window model.Window) ([]model.RouteGroupBucketPoint, error) {
+	return s.listRouteGroupBucketPointsForAppAt(ctx, appID, window, s.now())
+}
+
+func (s *RedisStore) listRouteGroupBucketPointsForAppAt(ctx context.Context, appID string, window model.Window, endTime time.Time) ([]model.RouteGroupBucketPoint, error) {
 	scopes, err := s.appScopes(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	metrics := make([]routeGroupBucketMetric, 0)
 	for _, scope := range scopes {
-		scopeMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+		scopeMetrics, err := s.listRouteGroupBucketMetricsForScopeAt(ctx, scope, window, endTime)
 		if err != nil {
 			return nil, err
 		}
@@ -461,7 +502,11 @@ func (s *RedisStore) RefreshRouteGroupSnapshots(ctx context.Context) error {
 }
 
 func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.AggregateScope, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error) {
-	bucketMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+	return s.aggregateRouteGroupsAt(ctx, scope, window, s.now(), limit, sortBy)
+}
+
+func (s *RedisStore) aggregateRouteGroupsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.RouteGroupItem, error) {
+	bucketMetrics, err := s.listRouteGroupBucketMetricsForScopeAt(ctx, scope, window, endTime)
 	if err != nil {
 		return nil, err
 	}
@@ -479,6 +524,10 @@ func (s *RedisStore) aggregateRouteGroups(ctx context.Context, scope model.Aggre
 }
 
 func (s *RedisStore) aggregateRouteGroupsForApp(ctx context.Context, appID string, window model.Window, limit int, sortBy string) ([]model.RouteGroupItem, error) {
+	return s.aggregateRouteGroupsForAppAt(ctx, appID, window, s.now(), limit, sortBy)
+}
+
+func (s *RedisStore) aggregateRouteGroupsForAppAt(ctx context.Context, appID string, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.RouteGroupItem, error) {
 	scopes, err := s.appScopes(ctx, appID)
 	if err != nil {
 		return nil, err
@@ -486,7 +535,7 @@ func (s *RedisStore) aggregateRouteGroupsForApp(ctx context.Context, appID strin
 	metrics := make(map[string]model.RouteGroupMetric)
 	bucketMetrics := make([]routeGroupBucketMetric, 0)
 	for _, scope := range scopes {
-		scopeMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+		scopeMetrics, err := s.listRouteGroupBucketMetricsForScopeAt(ctx, scope, window, endTime)
 		if err != nil {
 			return nil, err
 		}
@@ -512,16 +561,24 @@ func (s *RedisStore) aggregateRouteGroupsForApp(ctx context.Context, appID strin
 }
 
 func (s *RedisStore) aggregateAppMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	return s.aggregateAppMetricsAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) aggregateAppMetricsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
 	if scope.Kind == model.ScopePlatform || scope.Kind == model.ScopeTeam {
-		return s.aggregateAppMetricsFromRegisteredAppScopes(ctx, scope, window)
+		return s.aggregateAppMetricsFromRegisteredAppScopesAt(ctx, scope, window, endTime)
 	}
 	if scope.Kind == model.ScopeApp {
-		return s.aggregateAppMetricsForApp(ctx, scope.ID, window)
+		return s.aggregateAppMetricsForAppAt(ctx, scope.ID, window, endTime)
 	}
-	return s.aggregateAppMetricsFromScope(ctx, scope, window)
+	return s.aggregateAppMetricsFromScopeAt(ctx, scope, window, endTime)
 }
 
 func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopes(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	return s.aggregateAppMetricsFromRegisteredAppScopesAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopesAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
 	scopesValue, err := s.client.Do(ctx, "SMEMBERS", scopeRegistryKey)
 	if err != nil {
 		return nil, nil, err
@@ -542,7 +599,7 @@ func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopes(ctx context.Cont
 			continue
 		}
 		visitedApps[appID] = struct{}{}
-		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsForApp(ctx, appScope.ID, window)
+		appMetrics, appRouteMetrics, err := s.aggregateAppMetricsForAppAt(ctx, appScope.ID, window, endTime)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -569,13 +626,17 @@ func (s *RedisStore) aggregateAppMetricsFromRegisteredAppScopes(ctx context.Cont
 }
 
 func (s *RedisStore) aggregateAppMetricsForApp(ctx context.Context, appID string, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	return s.aggregateAppMetricsForAppAt(ctx, appID, window, s.now())
+}
+
+func (s *RedisStore) aggregateAppMetricsForAppAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
 	scopes, err := s.appScopes(ctx, appID)
 	if err != nil {
 		return nil, nil, err
 	}
 	bucketMetrics := make([]routeGroupBucketMetric, 0)
 	for _, scope := range scopes {
-		scopeMetrics, err := s.listRouteGroupBucketMetricsForScope(ctx, scope, window)
+		scopeMetrics, err := s.listRouteGroupBucketMetricsForScopeAt(ctx, scope, window, endTime)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -613,7 +674,11 @@ func (s *RedisStore) aggregateAppMetricsForApp(ctx context.Context, appID string
 }
 
 func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
-	minBucket, maxBucket := bucketWindowBounds(s.now(), window)
+	return s.aggregateAppMetricsFromScopeAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) aggregateAppMetricsFromScopeAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, map[string]map[string]model.RouteGroupMetric, error) {
+	minBucket, maxBucket := bucketWindowBounds(endTime, window)
 	keysValue, err := s.client.Do(ctx, "ZRANGEBYSCORE", routeGroupBucketIndexKey(scope), strconv.FormatInt(minBucket, 10), strconv.FormatInt(maxBucket, 10))
 	if err != nil {
 		return nil, nil, err
@@ -672,7 +737,11 @@ func (s *RedisStore) aggregateAppMetricsFromScope(ctx context.Context, scope mod
 }
 
 func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.AggregateScope, window model.Window) (map[string]model.RouteGroupMetric, error) {
-	minBucket, maxBucket := bucketWindowBounds(s.now(), window)
+	return s.aggregateComponentMetricsAt(ctx, scope, window, s.now())
+}
+
+func (s *RedisStore) aggregateComponentMetricsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, error) {
+	minBucket, maxBucket := bucketWindowBounds(endTime, window)
 	keysValue, err := s.client.Do(ctx, "ZRANGEBYSCORE", routeGroupBucketIndexKey(scope), strconv.FormatInt(minBucket, 10), strconv.FormatInt(maxBucket, 10))
 	if err != nil {
 		return nil, err
@@ -719,13 +788,17 @@ func (s *RedisStore) aggregateComponentMetrics(ctx context.Context, scope model.
 }
 
 func (s *RedisStore) aggregateComponentMetricsForApp(ctx context.Context, appID string, window model.Window) (map[string]model.RouteGroupMetric, error) {
+	return s.aggregateComponentMetricsForAppAt(ctx, appID, window, s.now())
+}
+
+func (s *RedisStore) aggregateComponentMetricsForAppAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, error) {
 	scopes, err := s.appScopes(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	metrics := make(map[string]model.RouteGroupMetric)
 	for _, scope := range scopes {
-		scopeMetrics, err := s.aggregateComponentMetrics(ctx, scope, window)
+		scopeMetrics, err := s.aggregateComponentMetricsAt(ctx, scope, window, endTime)
 		if err != nil {
 			return nil, err
 		}

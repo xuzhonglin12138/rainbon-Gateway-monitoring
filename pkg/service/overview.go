@@ -40,6 +40,11 @@ type routeGroupOverviewStore interface {
 	ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error)
 }
 
+type routeGroupOverviewAtStore interface {
+	ListRouteGroupsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.RouteGroupItem, error)
+	ListRouteGroupBucketPointsAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) ([]model.RouteGroupBucketPoint, error)
+}
+
 type OverviewService struct {
 	prometheus      PrometheusQueryClient
 	store           routeIndexStore
@@ -71,7 +76,11 @@ func NewOverviewService(cfg OverviewConfig) *OverviewService {
 }
 
 func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.Window) (model.Overview, error) {
-	if overview, ok, err := s.realtimeBucketOverview(ctx, model.AggregateScope{Kind: model.ScopePlatform}, window); err != nil {
+	return s.GetPlatformOverviewAt(ctx, window, s.now())
+}
+
+func (s *OverviewService) GetPlatformOverviewAt(ctx context.Context, window model.Window, endTime time.Time) (model.Overview, error) {
+	if overview, ok, err := s.realtimeBucketOverviewAt(ctx, model.AggregateScope{Kind: model.ScopePlatform}, window, endTime); err != nil {
 		return model.Overview{}, err
 	} else if ok {
 		return overview, nil
@@ -80,7 +89,11 @@ func (s *OverviewService) GetPlatformOverview(ctx context.Context, window model.
 }
 
 func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, window model.Window) (model.Overview, error) {
-	if overview, ok, err := s.realtimeBucketOverview(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window); err != nil {
+	return s.GetAppOverviewAt(ctx, appID, window, s.now())
+}
+
+func (s *OverviewService) GetAppOverviewAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.Overview, error) {
+	if overview, ok, err := s.realtimeBucketOverviewAt(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window, endTime); err != nil {
 		return model.Overview{}, err
 	} else if ok {
 		return overview, nil
@@ -96,13 +109,17 @@ func (s *OverviewService) GetAppOverview(ctx context.Context, appID string, wind
 }
 
 func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID string, window model.Window) (model.Overview, error) {
-	if overview, ok, err := s.realtimeBucketOverview(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window); err != nil {
+	return s.GetComponentOverviewAt(ctx, componentID, window, s.now())
+}
+
+func (s *OverviewService) GetComponentOverviewAt(ctx context.Context, componentID string, window model.Window, endTime time.Time) (model.Overview, error) {
+	if overview, ok, err := s.realtimeBucketOverviewAt(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window, endTime); err != nil {
 		return model.Overview{}, err
 	} else if ok {
 		return overview, nil
 	}
 	if s.routeGroupStore != nil {
-		items, err := s.routeGroupStore.ListRouteGroups(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window, 200, "summary")
+		items, err := listRouteGroupsAt(ctx, s.routeGroupStore, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window, endTime, 200, "summary")
 		if err != nil {
 			return model.Overview{}, err
 		}
@@ -150,17 +167,21 @@ func (s *OverviewService) GetComponentOverview(ctx context.Context, componentID 
 }
 
 func (s *OverviewService) realtimeBucketOverview(ctx context.Context, scope model.AggregateScope, window model.Window) (model.Overview, bool, error) {
+	return s.realtimeBucketOverviewAt(ctx, scope, window, s.now())
+}
+
+func (s *OverviewService) realtimeBucketOverviewAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) (model.Overview, bool, error) {
 	if s.routeGroupStore == nil {
 		return model.Overview{}, false, nil
 	}
-	buckets, err := s.routeGroupStore.ListRouteGroupBucketPoints(ctx, scope, window)
+	buckets, err := listRouteGroupBucketPointsAt(ctx, s.routeGroupStore, scope, window, endTime)
 	if err != nil {
 		return model.Overview{}, false, err
 	}
 	if len(buckets) == 0 {
 		return model.Overview{}, false, nil
 	}
-	return overviewFromRouteBuckets(scope, window, buckets, s.now()), true, nil
+	return overviewFromRouteBuckets(scope, window, buckets, endTime), true, nil
 }
 
 func overviewFromRouteGroups(componentID string, window model.Window, items []model.RouteGroupItem) model.Overview {
@@ -268,6 +289,14 @@ func overviewFromRouteMetrics(scope model.AggregateScope, window model.Window, m
 }
 
 func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint, window model.Window, now time.Time) []model.OverviewTrendPoint {
+	return componentTrendPointsFromBucketsWithOpenBucket(buckets, window, now, true)
+}
+
+func componentTrendPointsFromClosedBuckets(buckets []model.RouteGroupBucketPoint, window model.Window, endTime time.Time) []model.OverviewTrendPoint {
+	return componentTrendPointsFromBucketsWithOpenBucket(buckets, window, endTime, false)
+}
+
+func componentTrendPointsFromBucketsWithOpenBucket(buckets []model.RouteGroupBucketPoint, window model.Window, now time.Time, includeOpenBucket bool) []model.OverviewTrendPoint {
 	bucketCount := window.BucketCount()
 	if bucketCount <= 0 {
 		bucketCount = model.Window5m.BucketCount()
@@ -278,7 +307,10 @@ func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint, wind
 		bucketSeconds = 1
 	}
 	metricsByTimestamp := bucketMetricsByTimestamp(buckets)
-	latestBucket := closedTrendBucket(now)
+	latestBucket := model.AlignBucket(now)
+	if includeOpenBucket {
+		latestBucket = closedTrendBucket(now)
+	}
 	startBucket := latestBucket - int64(bucketCount-1)*int64(model.BucketSize/time.Second)
 	for index := 0; index < bucketCount; index++ {
 		timestamp := startBucket + int64(index)*int64(model.BucketSize/time.Second)
@@ -286,7 +318,7 @@ func componentTrendPointsFromBuckets(buckets []model.RouteGroupBucketPoint, wind
 		points = append(points, trendPointFromMetric(timestamp, metric, bucketSeconds, false))
 	}
 	openBucket := model.AlignBucket(now)
-	if openBucket > latestBucket {
+	if includeOpenBucket && openBucket > latestBucket {
 		if metric, ok := metricsByTimestamp[openBucket]; ok {
 			points = append(points, trendPointFromMetric(openBucket, metric, bucketSeconds, true))
 		}
@@ -322,8 +354,30 @@ func (s *OverviewService) GetPlatformRealtimeTrend(ctx context.Context, window m
 	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "", window)
 }
 
+func (s *OverviewService) GetPlatformRealtimeTrendAt(ctx context.Context, window model.Window, endTime time.Time) (model.OverviewTrend, error) {
+	if trend, ok, err := s.realtimeBucketTrendAt(ctx, model.AggregateScope{Kind: model.ScopePlatform}, window, endTime); err != nil {
+		return model.OverviewTrend{}, err
+	} else if ok {
+		return trend, nil
+	}
+	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopePlatform}, "", window)
+}
+
 func (s *OverviewService) GetAppRealtimeTrend(ctx context.Context, appID string, window model.Window) (model.OverviewTrend, error) {
 	if trend, ok, err := s.realtimeBucketTrend(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window); err != nil {
+		return model.OverviewTrend{}, err
+	} else if ok {
+		return trend, nil
+	}
+	routeMatcher, err := s.appRouteMatcher(ctx, appID)
+	if err != nil {
+		return model.OverviewTrend{}, err
+	}
+	return s.gatewayRealtimeTrend(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, routeMatcher, window)
+}
+
+func (s *OverviewService) GetAppRealtimeTrendAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.OverviewTrend, error) {
+	if trend, ok, err := s.realtimeBucketTrendAt(ctx, model.AggregateScope{Kind: model.ScopeApp, ID: appID}, window, endTime); err != nil {
 		return model.OverviewTrend{}, err
 	} else if ok {
 		return trend, nil
@@ -345,6 +399,23 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
 	}
 	start, end := alignedTrendRange(window, s.now(), trendRangeStepSeconds)
+	return s.componentPrometheusTrend(ctx, componentID, window, start, end)
+}
+
+func (s *OverviewService) GetComponentRealtimeTrendAt(ctx context.Context, componentID string, window model.Window, endTime time.Time) (model.OverviewTrend, error) {
+	if trend, ok, err := s.realtimeBucketTrendAt(ctx, model.AggregateScope{Kind: model.ScopeComponent, ID: componentID}, window, endTime); err != nil {
+		return model.OverviewTrend{}, err
+	} else if ok {
+		return trend, nil
+	}
+	if s.prometheus == nil {
+		return model.OverviewTrend{}, fmt.Errorf("prometheus client is required")
+	}
+	start, end := alignedTrendRange(window, endTime, trendRangeStepSeconds)
+	return s.componentPrometheusTrend(ctx, componentID, window, start, end)
+}
+
+func (s *OverviewService) componentPrometheusTrend(ctx context.Context, componentID string, window model.Window, start, end int64) (model.OverviewTrend, error) {
 	requests, err := s.prometheus.QueryRange(ctx, fmt.Sprintf(`sum(rate(app_request{service_id="%s",method="total"}[1m]))`, componentID), start, end, trendRangeStepSeconds)
 	if err != nil {
 		return model.OverviewTrend{}, err
@@ -385,21 +456,47 @@ func (s *OverviewService) GetComponentRealtimeTrend(ctx context.Context, compone
 }
 
 func (s *OverviewService) realtimeBucketTrend(ctx context.Context, scope model.AggregateScope, window model.Window) (model.OverviewTrend, bool, error) {
+	return s.realtimeBucketTrendWithOptions(ctx, scope, window, s.now(), true)
+}
+
+func (s *OverviewService) realtimeBucketTrendAt(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time) (model.OverviewTrend, bool, error) {
+	return s.realtimeBucketTrendWithOptions(ctx, scope, window, endTime, false)
+}
+
+func (s *OverviewService) realtimeBucketTrendWithOptions(ctx context.Context, scope model.AggregateScope, window model.Window, endTime time.Time, includeOpenBucket bool) (model.OverviewTrend, bool, error) {
 	if s.routeGroupStore == nil {
 		return model.OverviewTrend{}, false, nil
 	}
-	buckets, err := s.routeGroupStore.ListRouteGroupBucketPoints(ctx, scope, window)
+	buckets, err := listRouteGroupBucketPointsAt(ctx, s.routeGroupStore, scope, window, endTime)
 	if err != nil {
 		return model.OverviewTrend{}, false, err
 	}
 	if len(buckets) == 0 {
 		return model.OverviewTrend{}, false, nil
 	}
+	points := componentTrendPointsFromClosedBuckets(buckets, window, endTime)
+	if includeOpenBucket {
+		points = componentTrendPointsFromBuckets(buckets, window, endTime)
+	}
 	return model.OverviewTrend{
 		Scope:  scope,
 		Window: window,
-		Points: componentTrendPointsFromBuckets(buckets, window, s.now()),
+		Points: points,
 	}, true, nil
+}
+
+func listRouteGroupsAt(ctx context.Context, store routeGroupOverviewStore, scope model.AggregateScope, window model.Window, endTime time.Time, limit int, sortBy string) ([]model.RouteGroupItem, error) {
+	if atStore, ok := store.(routeGroupOverviewAtStore); ok {
+		return atStore.ListRouteGroupsAt(ctx, scope, window, endTime, limit, sortBy)
+	}
+	return store.ListRouteGroups(ctx, scope, window, limit, sortBy)
+}
+
+func listRouteGroupBucketPointsAt(ctx context.Context, store routeGroupOverviewStore, scope model.AggregateScope, window model.Window, endTime time.Time) ([]model.RouteGroupBucketPoint, error) {
+	if atStore, ok := store.(routeGroupOverviewAtStore); ok {
+		return atStore.ListRouteGroupBucketPointsAt(ctx, scope, window, endTime)
+	}
+	return store.ListRouteGroupBucketPoints(ctx, scope, window)
 }
 
 func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window model.Window) ([]model.PlatformNodeSummary, error) {

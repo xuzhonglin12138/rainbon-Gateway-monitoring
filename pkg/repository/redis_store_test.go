@@ -186,6 +186,44 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 	}
 }
 
+func TestRedisStoreAddRouteGroupBucketSkipsEmptyStaticDisplayFields(t *testing.T) {
+	client := &fakeRedisClient{}
+	store := NewRedisStore(client)
+
+	err := store.AddRouteGroupBucket(context.Background(), model.AggregateScope{
+		Kind: model.ScopePlatform,
+	}, model.Window5m, 1710000005, model.RouteGroupMetric{
+		RouteGroup:   "/api/order/detail/*",
+		RequestCount: 1,
+		AppID:        "app-a",
+		Namespace:    "team-ns",
+		TeamAlias:    "",
+		AppName:      "",
+	})
+	if err != nil {
+		t.Fatalf("AddRouteGroupBucket() unexpected error: %v", err)
+	}
+
+	var evalCall []string
+	for _, call := range client.calls {
+		if len(call) > 0 && call[0] == "EVAL" {
+			evalCall = call
+		}
+	}
+	if evalCall == nil {
+		t.Fatalf("expected route group bucket Lua write, got %#v", client.calls)
+	}
+	if stringArgsContainPair(evalCall, "team_alias", "") {
+		t.Fatalf("EVAL args include empty team_alias static field: %#v", evalCall)
+	}
+	if stringArgsContainPair(evalCall, "app_name", "") {
+		t.Fatalf("EVAL args include empty app_name static field: %#v", evalCall)
+	}
+	if !stringArgsContainPair(evalCall, "namespace", "team-ns") {
+		t.Fatalf("EVAL args = %#v; want non-empty namespace static field", evalCall)
+	}
+}
+
 func TestRedisStoreRefreshRouteGroupSnapshotsFiltersBucketsByWindow(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"platform"},

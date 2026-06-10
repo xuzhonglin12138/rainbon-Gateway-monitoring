@@ -36,7 +36,9 @@ for i = 1, numericCount do
 	offset = offset + 2
 end
 
-redis.call("HSET", bucketKey, unpack(ARGV, offset))
+if offset <= #ARGV then
+	redis.call("HSET", bucketKey, unpack(ARGV, offset))
+end
 redis.call("EXPIRE", bucketKey, ttl)
 return 1
 `
@@ -57,6 +59,18 @@ type RedisStore struct {
 type routeGroupBucketMetric struct {
 	timestamp int64
 	metric    model.RouteGroupMetric
+}
+
+func nonEmptyFieldPairs(pairs [][2]string) []string {
+	result := make([]string, 0, len(pairs)*2)
+	for _, pair := range pairs {
+		value := strings.TrimSpace(pair[1])
+		if value == "" {
+			continue
+		}
+		result = append(result, pair[0], value)
+	}
+	return result
 }
 
 func NewRedisStore(client CommandClient) *RedisStore {
@@ -83,19 +97,19 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 		{"latency_count", float64(metric.LatencyCount)},
 		{"egress_bytes", float64(metric.EgressBytes)},
 	}
-	static := []string{
-		"route_group", metric.RouteGroup,
-		"team_id", metric.TeamID,
-		"team_name", metric.TeamName,
-		"team_alias", metric.TeamAlias,
-		"app_id", metric.AppID,
-		"namespace", metric.Namespace,
-		"region_app_id", metric.RegionAppID,
-		"app_name", metric.AppName,
-		"region_name", metric.RegionName,
-		"component_id", metric.ComponentID,
-		"service_alias", metric.ServiceAlias,
-	}
+	static := nonEmptyFieldPairs([][2]string{
+		{"route_group", metric.RouteGroup},
+		{"team_id", metric.TeamID},
+		{"team_name", metric.TeamName},
+		{"team_alias", metric.TeamAlias},
+		{"app_id", metric.AppID},
+		{"namespace", metric.Namespace},
+		{"region_app_id", metric.RegionAppID},
+		{"app_name", metric.AppName},
+		{"region_name", metric.RegionName},
+		{"component_id", metric.ComponentID},
+		{"service_alias", metric.ServiceAlias},
+	})
 	args := []string{
 		"EVAL",
 		addRouteGroupBucketScript,

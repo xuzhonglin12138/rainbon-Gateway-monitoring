@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -32,6 +34,7 @@ type Server struct {
 	defaultSLATarget float64
 	httpLoggerSyncer HTTPLoggerSyncer
 	httpLoggerMode   string
+	grafanaBaseURL   *url.URL
 }
 
 // Config holds the server configuration.
@@ -48,6 +51,7 @@ type Config struct {
 	DefaultSLATarget float64
 	HTTPLoggerSyncer HTTPLoggerSyncer
 	HTTPLoggerMode   string
+	GrafanaBaseURL   string
 }
 
 type RouteGroupQueryStore interface {
@@ -159,10 +163,20 @@ func New(cfg Config) *Server {
 		httpLoggerSyncer: cfg.HTTPLoggerSyncer,
 		httpLoggerMode:   cfg.HTTPLoggerMode,
 	}
+	if strings.TrimSpace(cfg.GrafanaBaseURL) != "" {
+		parsed, err := url.Parse(strings.TrimSpace(cfg.GrafanaBaseURL))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			s.logger.WithError(err).WithField("grafana_base_url", cfg.GrafanaBaseURL).Warn("invalid grafana base url, grafana proxy is disabled")
+		} else {
+			s.grafanaBaseURL = parsed
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/static/main.js", s.handleStaticJS)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/grafana", s.handleGrafanaProxy)
+	mux.HandleFunc("/grafana/", s.handleGrafanaProxy)
 	mux.HandleFunc("/api/v1/collector/apisix/logs", s.handleCollectApisixLogs)
 	mux.HandleFunc("/api/v1/platform/apps/top-errors", s.handlePlatformAppTopErrors)
 	mux.HandleFunc("/api/v1/platform/apps/top-latency", s.handlePlatformAppTopLatency)
@@ -232,6 +246,117 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(msg))
 	}
+}
+
+func (s *Server) handleGrafanaProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.isLicensed() {
+		http.Error(w, "plugin not authorized", http.StatusForbidden)
+		return
+	}
+	if s.grafanaBaseURL == nil {
+		http.Error(w, "grafana proxy is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(s.grafanaBaseURL)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.URL.Path = grafanaUpstreamPath(r.URL.Path)
+		req.URL.RawPath = ""
+		req.URL.RawQuery = r.URL.RawQuery
+		req.Host = s.grafanaBaseURL.Host
+		if req.Header.Get("X-Forwarded-Prefix") == "" {
+			req.Header.Set("X-Forwarded-Prefix", "/grafana")
+		}
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		rewriteGrafanaResponseHeaders(resp.Header)
+		return nil
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		s.logger.WithError(err).WithField("path", r.URL.Path).Warn("grafana proxy failed")
+		http.Error(w, "grafana proxy failed", http.StatusBadGateway)
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func grafanaUpstreamPath(path string) string {
+	path = strings.TrimPrefix(path, "/grafana")
+	if path == "" || path == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func rewriteGrafanaResponseHeaders(header http.Header) {
+	if location := header.Get("Location"); location != "" {
+		header.Set("Location", rewriteGrafanaLocation(location))
+	}
+	cookies := header.Values("Set-Cookie")
+	if len(cookies) == 0 {
+		return
+	}
+	header.Del("Set-Cookie")
+	for _, cookie := range cookies {
+		header.Add("Set-Cookie", rewriteGrafanaCookiePath(cookie))
+	}
+}
+
+func rewriteGrafanaLocation(location string) string {
+	if location == "" || strings.HasPrefix(location, "/grafana/") || location == "/grafana" {
+		return location
+	}
+	parsed, err := url.Parse(location)
+	if err != nil {
+		return location
+	}
+	if parsed.Scheme == "" && parsed.Host == "" {
+		parsed.Path = "/grafana" + ensureLeadingSlash(parsed.Path)
+		return parsed.String()
+	}
+	parsed.Scheme = ""
+	parsed.Host = ""
+	parsed.User = nil
+	parsed.Path = "/grafana" + ensureLeadingSlash(parsed.Path)
+	return parsed.String()
+}
+
+func rewriteGrafanaCookiePath(cookie string) string {
+	parts := strings.Split(cookie, ";")
+	replaced := false
+	for i, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(trimmed), "path=") {
+			parts[i] = preserveCookieSpacing(part, "Path=/grafana")
+			replaced = true
+		}
+	}
+	if !replaced {
+		parts = append(parts, " Path=/grafana")
+	}
+	return strings.Join(parts, ";")
+}
+
+func preserveCookieSpacing(original, replacement string) string {
+	prefixLen := len(original) - len(strings.TrimLeft(original, " "))
+	if prefixLen <= 0 {
+		return replacement
+	}
+	return original[:prefixLen] + replacement
+}
+
+func ensureLeadingSlash(path string) string {
+	if path == "" {
+		return "/"
+	}
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	return "/" + path
 }
 
 func (s *Server) handleCollectApisixLogs(w http.ResponseWriter, r *http.Request) {

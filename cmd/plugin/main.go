@@ -251,6 +251,7 @@ func main() {
 		DefaultSLATarget: envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
 		HTTPLoggerSyncer: httpLoggerSyncer,
 		HTTPLoggerMode:   httpLoggerMode,
+		GrafanaBaseURL:   strings.TrimSpace(os.Getenv("NM_GRAFANA_BASE_URL")),
 	})
 
 	go func() {

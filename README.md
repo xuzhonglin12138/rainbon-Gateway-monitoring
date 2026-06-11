@@ -83,6 +83,7 @@ make build-with-key
 | `NM_REDIS_TLS` | `false` | 是否使用 TLS 连接 Redis |
 | `NM_PROMETHEUS_URL` | `http://127.0.0.1:9999` | Prometheus API 地址 |
 | `NM_PROMETHEUS_TIMEOUT_SECONDS` | `3` | Prometheus 查询超时 |
+| `NM_GRAFANA_BASE_URL` | 空 | Grafana 上游地址；配置后网关监测通过 `/grafana/*` 代理监控中心页面 |
 | `NM_DEFAULT_SLA_TARGET` | `0.999` | 默认应用 SLA 目标值 |
 | `NM_HTTP_LOGGER_MODE` | `global` | `global` 使用 `ApisixGlobalRule` 管理采集；`route` 使用旧 Route 级挂载；`off` 不自动管理 APISIX `http-logger` |
 | `NM_APISIX_NAMESPACES` | 空 | 可选扫描 namespace 覆盖项；默认应由后端扫描 Rainbond 管理的 `ApisixRoute` 自动发现 |

@@ -90,12 +90,13 @@ make build-with-key
 | `NM_APISIX_GLOBAL_RULE_NAMESPACE` | 空 | 可选固定 `ApisixGlobalRule` namespace；为空时按发现到的 APISIXRoute namespace 分组创建 |
 | `NM_APISIX_INGRESS_CLASS` | 空 | 可选固定 APISIX ingress class；为空时优先读取 `ApisixRoute.spec.ingressClassName` |
 | `NM_HTTP_LOGGER_GLOBAL_RULE_NAME` | `rainbond-gateway-monitoring-http-logger` | 插件管理的 GlobalRule 名称 |
-| `NM_COLLECTOR_URI` | `http://rainbond-gateway-monitoring.rbd-system.svc:8080/api/v1/collector/apisix/logs` | 写入到 APISIX `http-logger` 的 Collector 地址；需确保 APISIX 可访问 |
 | `NM_HTTP_LOGGER_TIMEOUT_SECONDS` | `3` | APISIX `http-logger` 超时 |
 | `NM_HTTP_LOGGER_SSL_VERIFY` | `false` | APISIX `http-logger` SSL 校验 |
 | `NM_HTTP_LOGGER_SYNC_INTERVAL_SECONDS` | `60` | GlobalRule reconcile / Route 兼容模式同步周期 |
 | `NM_SNAPSHOT_REFRESH_SECONDS` | `5` | Redis TopN / summary 快照刷新周期 |
 | `NM_ROUTE_GROUP_LIMIT` | `100` | 每个应用 route_group 基数上限 |
+
+APISIX `http-logger` 的 Collector 地址不再通过环境变量配置。后端启动时会读取当前容器 `eth0` 的 IPv4 地址，并拼接为 `http://{podIP}:8080/api/v1/collector/apisix/logs` 写入 APISIX；如果无法获取 `eth0`，会回退到第一个非 loopback IPv4，仍无法获取时才使用默认 Service URI。
 
 ### 5. 部署
 

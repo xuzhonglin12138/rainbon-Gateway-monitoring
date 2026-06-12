@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -171,7 +172,7 @@ func main() {
 	snapshotJob.Start(ctx)
 
 	routeClient := gateway.NewDynamicRouteClient(dynamicClient)
-	collectorURI := collectorURIFromEnv()
+	collectorURI := collectorURIFromRuntime()
 	logger.WithField("collector_uri", collectorURI).Info("resolved apisix http-logger collector uri")
 	httpLoggerConfig := gateway.HTTPLoggerConfig{
 		URI:             collectorURI,
@@ -304,18 +305,88 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func collectorURIFromEnv() string {
-	configured := strings.TrimSpace(os.Getenv("NM_COLLECTOR_URI"))
-	if configured != "" && configured != DefaultCollectorURI && !isKubernetesServiceURI(configured) {
-		return configured
-	}
-	if uri := rainbondNodePortCollectorURI(); uri != "" {
-		return uri
-	}
-	if configured != "" {
-		return configured
+type runtimeNetworkInterface struct {
+	Name  string
+	Flags net.Flags
+	Addrs []net.Addr
+}
+
+func collectorURIFromRuntime() string {
+	if ip := podIPv4FromRuntime(); ip != "" {
+		return collectorURIFromIP(ip)
 	}
 	return DefaultCollectorURI
+}
+
+func collectorURIFromIP(ip string) string {
+	return "http://" + ip + ":8080" + CollectorPath
+}
+
+func podIPv4FromRuntime() string {
+	interfaces, err := runtimeNetworkInterfaces()
+	if err != nil {
+		return ""
+	}
+	return podIPv4FromInterfaces(interfaces)
+}
+
+func runtimeNetworkInterfaces() ([]runtimeNetworkInterface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]runtimeNetworkInterface, 0, len(interfaces))
+	for _, iface := range interfaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		result = append(result, runtimeNetworkInterface{
+			Name:  iface.Name,
+			Flags: iface.Flags,
+			Addrs: addrs,
+		})
+	}
+	return result, nil
+}
+
+func podIPv4FromInterfaces(interfaces []runtimeNetworkInterface) string {
+	for _, iface := range interfaces {
+		if iface.Name == "eth0" {
+			if ip := firstIPv4(iface.Addrs); ip != "" {
+				return ip
+			}
+		}
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if ip := firstIPv4(iface.Addrs); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func firstIPv4(addrs []net.Addr) string {
+	for _, addr := range addrs {
+		var ip net.IP
+		switch value := addr.(type) {
+		case *net.IPNet:
+			ip = value.IP
+		case *net.IPAddr:
+			ip = value.IP
+		default:
+			continue
+		}
+		ipv4 := ip.To4()
+		if ipv4 == nil || ipv4.IsLoopback() {
+			continue
+		}
+		return ipv4.String()
+	}
+	return ""
 }
 
 func grafanaBaseURLFromEnv() string {
@@ -455,42 +526,6 @@ func httpLoggerModeFromEnv(logger *logrus.Logger) string {
 		}
 		return "global"
 	}
-}
-
-func isKubernetesServiceURI(uri string) bool {
-	return strings.Contains(uri, ".svc")
-}
-
-func rainbondNodePortCollectorURI() string {
-	alias := strings.ToUpper(strings.TrimSpace(os.Getenv("_SERVICE_ALIAS")))
-	host := strings.TrimSpace(os.Getenv("_HOST_IP"))
-	if alias == "" || host == "" {
-		return ""
-	}
-
-	prefix := alias + "_"
-	var nodePort int
-	for _, entry := range os.Environ() {
-		key, _, ok := strings.Cut(entry, "=")
-		if !ok || !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "_SERVICE_HOST") {
-			continue
-		}
-		candidate := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "_SERVICE_HOST")
-		parsed, err := strconv.Atoi(candidate)
-		if err != nil || parsed < 30000 || parsed > 32767 {
-			continue
-		}
-		if os.Getenv(prefix+candidate+"_SERVICE_PORT") != "8080" {
-			continue
-		}
-		if nodePort == 0 || parsed < nodePort {
-			nodePort = parsed
-		}
-	}
-	if nodePort == 0 {
-		return ""
-	}
-	return "http://" + host + ":" + strconv.Itoa(nodePort) + CollectorPath
 }
 
 func envInt(key string, fallback int) int {

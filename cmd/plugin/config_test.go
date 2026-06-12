@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"testing"
 )
@@ -30,54 +31,6 @@ func TestDefaultHTTPLoggerBatchSettingsAreConservative(t *testing.T) {
 	}
 }
 
-func TestCollectorURIFromEnvUsesExplicitCustomValue(t *testing.T) {
-	t.Setenv("NM_COLLECTOR_URI", "http://collector.example.com:30004"+CollectorPath)
-	t.Setenv("_SERVICE_ALIAS", "gra6b16b")
-	t.Setenv("_HOST_IP", "172.16.0.169")
-	t.Setenv("GRA6B16B_30004_SERVICE_HOST", "10.43.168.162")
-	t.Setenv("GRA6B16B_30004_SERVICE_PORT", "8080")
-
-	if got := collectorURIFromEnv(); got != "http://collector.example.com:30004"+CollectorPath {
-		t.Fatalf("collectorURIFromEnv() = %q", got)
-	}
-}
-
-func TestCollectorURIFromEnvDerivesRainbondNodePortWhenDefaultIsConfigured(t *testing.T) {
-	t.Setenv("NM_COLLECTOR_URI", DefaultCollectorURI)
-	t.Setenv("_SERVICE_ALIAS", "gra6b16b")
-	t.Setenv("_HOST_IP", "172.16.0.169")
-	t.Setenv("GRA6B16B_30001_SERVICE_HOST", "10.43.168.161")
-	t.Setenv("GRA6B16B_30001_SERVICE_PORT", "5000")
-	t.Setenv("GRA6B16B_30004_SERVICE_HOST", "10.43.168.162")
-	t.Setenv("GRA6B16B_30004_SERVICE_PORT", "8080")
-
-	want := "http://172.16.0.169:30004" + CollectorPath
-	if got := collectorURIFromEnv(); got != want {
-		t.Fatalf("collectorURIFromEnv() = %q, want %q", got, want)
-	}
-}
-
-func TestCollectorURIFromEnvOverridesKubernetesServiceURIWithRainbondNodePort(t *testing.T) {
-	t.Setenv("NM_COLLECTOR_URI", "http://gra6b16b.rbd-plugins.svc.cluster.local:8080"+CollectorPath)
-	t.Setenv("_SERVICE_ALIAS", "gra6b16b")
-	t.Setenv("_HOST_IP", "172.16.0.169")
-	t.Setenv("GRA6B16B_30004_SERVICE_HOST", "10.43.168.162")
-	t.Setenv("GRA6B16B_30004_SERVICE_PORT", "8080")
-
-	want := "http://172.16.0.169:30004" + CollectorPath
-	if got := collectorURIFromEnv(); got != want {
-		t.Fatalf("collectorURIFromEnv() = %q, want %q", got, want)
-	}
-}
-
-func TestCollectorURIFromEnvFallsBackToDefaultWithoutRainbondRuntimeEnv(t *testing.T) {
-	unsetEnv(t, "NM_COLLECTOR_URI", "_SERVICE_ALIAS", "_HOST_IP", "GRA6B16B_30004_SERVICE_HOST", "GRA6B16B_30004_SERVICE_PORT")
-
-	if got := collectorURIFromEnv(); got != DefaultCollectorURI {
-		t.Fatalf("collectorURIFromEnv() = %q, want %q", got, DefaultCollectorURI)
-	}
-}
-
 func TestGrafanaBaseURLFromEnvUsesExplicitValue(t *testing.T) {
 	unsetEnv(t, "GRAFANA_URL", "GRAFANA_BASE_URL", "GF_SERVER_ROOT_URL", "GRAFANA_HOST", "GRAFANA_PORT")
 	t.Setenv("NM_GRAFANA_BASE_URL", "http://grafana.example.local:3000")
@@ -87,6 +40,56 @@ func TestGrafanaBaseURLFromEnvUsesExplicitValue(t *testing.T) {
 	if got := grafanaBaseURLFromEnv(); got != "http://grafana.example.local:3000" {
 		t.Fatalf("grafanaBaseURLFromEnv() = %q", got)
 	}
+}
+
+func TestCollectorURIFromIPUsesFixedPortAndCollectorPath(t *testing.T) {
+	want := "http://10.42.0.114:8080" + CollectorPath
+	if got := collectorURIFromIP("10.42.0.114"); got != want {
+		t.Fatalf("collectorURIFromIP() = %q, want %q", got, want)
+	}
+}
+
+func TestPodIPv4FromInterfacesPrefersEth0(t *testing.T) {
+	interfaces := []runtimeNetworkInterface{
+		{Name: "net1", Addrs: []net.Addr{mustIPNet(t, "10.42.0.200/32")}},
+		{Name: "eth0", Addrs: []net.Addr{mustIPNet(t, "10.42.0.114/32")}},
+	}
+
+	if got := podIPv4FromInterfaces(interfaces); got != "10.42.0.114" {
+		t.Fatalf("podIPv4FromInterfaces() = %q", got)
+	}
+}
+
+func TestPodIPv4FromInterfacesFallsBackToNonLoopback(t *testing.T) {
+	interfaces := []runtimeNetworkInterface{
+		{Name: "lo", Flags: net.FlagLoopback, Addrs: []net.Addr{mustIPNet(t, "127.0.0.1/8")}},
+		{Name: "net1", Addrs: []net.Addr{mustIPNet(t, "10.42.0.200/32")}},
+	}
+
+	if got := podIPv4FromInterfaces(interfaces); got != "10.42.0.200" {
+		t.Fatalf("podIPv4FromInterfaces() = %q", got)
+	}
+}
+
+func TestPodIPv4FromInterfacesIgnoresLoopbackAndIPv6(t *testing.T) {
+	interfaces := []runtimeNetworkInterface{
+		{Name: "eth0", Addrs: []net.Addr{mustIPNet(t, "fe80::1/64")}},
+		{Name: "lo", Flags: net.FlagLoopback, Addrs: []net.Addr{mustIPNet(t, "127.0.0.1/8")}},
+	}
+
+	if got := podIPv4FromInterfaces(interfaces); got != "" {
+		t.Fatalf("podIPv4FromInterfaces() = %q, want empty", got)
+	}
+}
+
+func mustIPNet(t *testing.T, cidr string) *net.IPNet {
+	t.Helper()
+	ip, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("parse cidr %s: %v", cidr, err)
+	}
+	ipNet.IP = ip
+	return ipNet
 }
 
 func TestGrafanaBaseURLFromEnvUsesGrafanaURL(t *testing.T) {

@@ -207,7 +207,7 @@ GlobalRule 不保存业务维度；业务维度仍由只读 route mapping scanne
 
 - namespace：扫描 Rainbond 管理的 `ApisixRoute` 所在 namespace。
 - ingress class：优先读取 `ApisixRoute.spec.ingressClassName`，为空时使用集群默认 APISIX ingress class，最后兜底为 `apisix`。
-- collector URI：优先使用 `NM_COLLECTOR_URI`；未配置时根据插件 Service 和 namespace 生成内部 Service 地址。
+- collector URI：不暴露手动配置项；插件启动时读取自身容器 `eth0` IPv4，并生成 `http://{podIP}:8080/api/v1/collector/apisix/logs`，无法获取时回退到第一个非 loopback IPv4，再失败才使用默认 Service URI。
 
 环境变量只作为覆盖项：
 

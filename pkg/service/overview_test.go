@@ -849,13 +849,12 @@ func TestPlatformNodeAvgLatencyQueryKeepsApisixLatencyMilliseconds(t *testing.T)
 	}
 }
 
-func TestOverviewServiceFiltersPlatformNodeMetricsByKnownRoutes(t *testing.T) {
+func TestOverviewServiceDoesNotBuildHugeRouteMatcherForPlatformNodeMetrics(t *testing.T) {
 	store := &fakeRouteGroupOverviewStore{platformRoutes: []string{"team_app-8080.example.test_abcd"}}
-	routeMatcher := prometheusRouteMatcher(store.platformRoutes)
-	requestsQuery := platformNodeRequestsQuery(model.Window5m, routeMatcher)
-	latencyQuery := platformNodeAvgLatencyQuery(model.Window5m, routeMatcher)
-	errorsQuery := platformNodeErrorsQuery(model.Window5m, routeMatcher)
-	egressQuery := platformNodeEgressQuery(model.Window5m, routeMatcher)
+	requestsQuery := platformNodeRequestsQuery(model.Window5m)
+	latencyQuery := platformNodeAvgLatencyQuery(model.Window5m)
+	errorsQuery := platformNodeErrorsQuery(model.Window5m)
+	egressQuery := platformNodeEgressQuery(model.Window5m)
 	client := &fakePrometheusClient{
 		vectors: map[string][]promclient.Sample{
 			requestsQuery: {{Metric: map[string]string{"k8s_node": "node-a"}, Value: 10}},
@@ -879,10 +878,9 @@ func TestOverviewServiceFiltersPlatformNodeMetricsByKnownRoutes(t *testing.T) {
 	if nodes[0].RequestCount != 10 || nodes[0].ErrorRate != 0.2 {
 		t.Fatalf("node metrics = %+v; want request 10 and error rate 0.2", nodes[0])
 	}
-	wantRouteLabel := prometheusRouteLabel(routeMatcher)
 	for _, query := range client.queries {
-		if !strings.Contains(query, wantRouteLabel) {
-			t.Fatalf("query = %q; want platform route filter", query)
+		if strings.Contains(query, `route=~`) {
+			t.Fatalf("query = %q; platform node summary must not include route matcher", query)
 		}
 	}
 }

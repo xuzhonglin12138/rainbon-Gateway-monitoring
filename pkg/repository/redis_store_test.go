@@ -363,18 +363,14 @@ func TestRedisStoreRefreshRouteGroupSnapshotsFiltersBucketsByWindow(t *testing.T
 		t.Fatalf("RefreshRouteGroupSnapshots() unexpected error: %v", err)
 	}
 
-	var hgetallCount int
 	var sawSnapshot bool
 	for _, call := range client.calls {
-		if call[0] == "HGETALL" {
-			hgetallCount++
-		}
 		if len(call) >= 5 && call[0] == "SET" && call[1] == "nm:platform:5m:route-groups:summary" && call[3] == "EX" && call[4] == "120" {
 			sawSnapshot = true
 		}
-	}
-	if hgetallCount != 4 {
-		t.Fatalf("HGETALL count = %d; want filtered buckets across 5m/10m/30m windows", hgetallCount)
+		if call[0] == "KEYS" {
+			t.Fatalf("RefreshRouteGroupSnapshots should use route bucket indexes without KEYS, got %#v", client.calls)
+		}
 	}
 	if !sawSnapshot {
 		t.Fatalf("expected summary snapshot write with TTL, got %#v", client.calls)
@@ -638,7 +634,7 @@ func TestRedisStoreListAppsCanonicalizesRegionAppID(t *testing.T) {
 	}
 }
 
-func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(t *testing.T) {
+func TestRedisStoreListAppsUsesPlatformRouteBucketsWithoutScanningAppScopes(t *testing.T) {
 	client := &fakeRedisClient{
 		members: []interface{}{"platform", "app:app-a", "app:app-b"},
 		zrangeByKey: map[string][]interface{}{
@@ -651,18 +647,39 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 				"nm:app:app-b:5m:route-group:_api_same:bucket:1709999100",
 			},
 			"nm:platform:route-group-buckets": []interface{}{
-				"nm:platform:5m:route-group:_api_same:bucket:1710000005",
+				"nm:platform:5m:route-group:_api_a:bucket:1710000005",
+				"nm:platform:5m:route-group:_api_b:bucket:1710000005",
+				"nm:platform:5m:route-group:_api_b_old:bucket:1709999100",
 			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:platform:5m:route-group:_api_same:bucket:1710000005": {
-				"route_group", "/api/same",
-				"request_count", "999",
+			"nm:platform:5m:route-group:_api_a:bucket:1710000005": {
+				"route_group", "/api/a",
+				"request_count", "10",
+				"latency_count", "10",
+				"latency_sum_ms", "100",
 				"app_id", "app-a",
+				"team_id", "team-a",
+			},
+			"nm:platform:5m:route-group:_api_b:bucket:1710000005": {
+				"route_group", "/api/b",
+				"request_count", "20",
+				"latency_count", "20",
+				"latency_sum_ms", "400",
+				"app_id", "app-b",
+				"team_id", "team-b",
+			},
+			"nm:platform:5m:route-group:_api_b_old:bucket:1709999100": {
+				"route_group", "/api/b-old",
+				"request_count", "20",
+				"latency_count", "20",
+				"latency_sum_ms", "400",
+				"app_id", "app-b",
+				"team_id", "team-b",
 			},
 			"nm:app:app-a:5m:route-group:_api_same:bucket:1710000005": {
 				"route_group", "/api/same",
-				"request_count", "10",
+				"request_count", "999",
 				"latency_count", "10",
 				"latency_sum_ms", "100",
 				"app_id", "app-a",
@@ -707,7 +724,7 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 		t.Fatalf("5m items length = %d; want 2", len(items5m))
 	}
 	if items5m[0].AppID != "app-b" || items5m[0].RequestCount != 20 {
-		t.Fatalf("5m top item = %#v; want app-b with 20 requests from app scope", items5m[0])
+		t.Fatalf("5m top item = %#v; want app-b with 20 requests from platform scope", items5m[0])
 	}
 	items30m, err := store.ListApps(context.Background(), model.AggregateScope{Kind: model.ScopePlatform}, model.Window30m, 50, "throughput")
 	if err != nil {
@@ -719,34 +736,36 @@ func TestRedisStoreListAppsUsesRegisteredAppScopesInsteadOfPlatformRouteBuckets(
 	if items30m[0].AppID != "app-b" || items30m[0].RequestCount != 40 {
 		t.Fatalf("30m top item = %#v; want app-b with current and older raw buckets from selected window", items30m[0])
 	}
+	if countCommand(client.calls, "SMEMBERS") != 0 {
+		t.Fatalf("ListApps platform scope should not scan registered app scopes, calls=%#v", client.calls)
+	}
 }
 
 func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testing.T) {
 	client := &fakeRedisClient{
-		members: []interface{}{"app:app-a"},
 		zrangeByKey: map[string][]interface{}{
-			"nm:app:app-a:route-group-buckets": {
-				"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400",
-				"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000",
-				"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360",
+			"nm:platform:route-group-buckets": {
+				"nm:platform:5m:route-group:_api_old:bucket:1709999400",
+				"nm:platform:5m:route-group:_api_current:bucket:1710000000",
+				"nm:platform:5m:route-group:_api_future:bucket:1710000360",
 			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:_api_old:bucket:1709999400": {
+			"nm:platform:5m:route-group:_api_old:bucket:1709999400": {
 				"route_group", "/api/old",
 				"request_count", "1000",
 				"latency_count", "1000",
 				"latency_sum_ms", "1000",
 				"app_id", "app-a",
 			},
-			"nm:app:app-a:5m:route-group:_api_current:bucket:1710000000": {
+			"nm:platform:5m:route-group:_api_current:bucket:1710000000": {
 				"route_group", "/api/current",
 				"request_count", "200",
 				"latency_count", "200",
 				"latency_sum_ms", "2000",
 				"app_id", "app-a",
 			},
-			"nm:app:app-a:5m:route-group:_api_future:bucket:1710000360": {
+			"nm:platform:5m:route-group:_api_future:bucket:1710000360": {
 				"route_group", "/api/future",
 				"request_count", "5000",
 				"latency_count", "5000",
@@ -777,22 +796,21 @@ func TestRedisStoreListAppsRequestRankingUsesOnlySelectedWindowBuckets(t *testin
 
 func TestRedisStoreListAppsAtUsesExplicitWindowEndTime(t *testing.T) {
 	client := &fakeRedisClient{
-		members: []interface{}{"app:app-a"},
 		zrangeByKey: map[string][]interface{}{
-			"nm:app:app-a:route-group-buckets": {
-				"nm:app:app-a:5m:route-group:_api_inside:bucket:1710000000",
-				"nm:app:app-a:5m:route-group:_api_after_end:bucket:1710000005",
+			"nm:platform:route-group-buckets": {
+				"nm:platform:5m:route-group:_api_inside:bucket:1710000000",
+				"nm:platform:5m:route-group:_api_after_end:bucket:1710000005",
 			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:app:app-a:5m:route-group:_api_inside:bucket:1710000000": {
+			"nm:platform:5m:route-group:_api_inside:bucket:1710000000": {
 				"route_group", "/api/inside",
 				"request_count", "70",
 				"latency_count", "70",
 				"latency_sum_ms", "700",
 				"app_id", "app-a",
 			},
-			"nm:app:app-a:5m:route-group:_api_after_end:bucket:1710000005": {
+			"nm:platform:5m:route-group:_api_after_end:bucket:1710000005": {
 				"route_group", "/api/after-end",
 				"request_count", "900",
 				"latency_count", "900",
@@ -824,15 +842,12 @@ func TestRedisStoreListAppsAtUsesExplicitWindowEndTime(t *testing.T) {
 func TestRedisStoreListAppsDeduplicatesCanonicalAliasBuckets(t *testing.T) {
 	client := &fakeRedisClient{
 		zrangeByKey: map[string][]interface{}{
-			"nm:app:1023:route-group-buckets": {
-				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
-			},
-			"nm:app:region-app-a:route-group-buckets": {
-				"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005",
+			"nm:platform:route-group-buckets": {
+				"nm:platform:5m:route-group:_api_ping:bucket:1710000005",
 			},
 		},
 		hashByKey: map[string][]interface{}{
-			"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005": {
+			"nm:platform:5m:route-group:_api_ping:bucket:1710000005": {
 				"route_group", "/api/ping",
 				"request_count", "50",
 				"latency_count", "50",
@@ -841,18 +856,8 @@ func TestRedisStoreListAppsDeduplicatesCanonicalAliasBuckets(t *testing.T) {
 				"region_app_id", "region-app-a",
 				"team_id", "team-a",
 			},
-			"nm:app:region-app-a:5m:route-group:_api_ping:bucket:1710000005": {
-				"route_group", "/api/ping",
-				"request_count", "50",
-				"latency_count", "50",
-				"latency_sum_ms", "500",
-				"app_id", "region-app-a",
-				"region_app_id", "region-app-a",
-				"team_id", "team-a",
-			},
 		},
 		sets: map[string]interface{}{
-			scopeRegistryKey:                []interface{}{"app:1023", "app:region-app-a"},
 			appAliasesKey("1023"):           []interface{}{"region-app-a"},
 			appCanonicalKey("region-app-a"): "1023",
 		},

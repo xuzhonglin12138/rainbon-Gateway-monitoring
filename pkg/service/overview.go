@@ -503,10 +503,11 @@ func (s *OverviewService) GetPlatformNodeSummaries(ctx context.Context, window m
 	if s.prometheus == nil {
 		return nil, fmt.Errorf("prometheus client is required")
 	}
-	routeMatcher, err := s.platformRouteMatcher(ctx)
-	if err != nil {
-		return nil, err
-	}
+	// Node summary is a gateway-node level view. Filtering by every collected
+	// Rainbond route can build a very large route=~ matcher on busy clusters and
+	// make Prometheus queries exceed the UI gateway timeout. APISIX node metrics
+	// are already scoped to gateway traffic, so keep this query unfiltered.
+	routeMatcher := ""
 	requests, err := s.prometheus.QueryInstant(ctx, platformNodeRequestsQuery(window, routeMatcher))
 	if err != nil {
 		return nil, err

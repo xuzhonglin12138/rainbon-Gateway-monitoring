@@ -278,7 +278,7 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 	if evalCall[2] != "2" {
 		t.Fatalf("EVAL key count = %s; want 2", evalCall[2])
 	}
-	if evalCall[3] != "nm:app:app-a:5m:route-group:/api/order/detail/*:component:svc-a:bucket:1710000005" {
+	if evalCall[3] != "nm:app:app-a:5m:route-group:/api/order/detail/*:bucket:1710000005" {
 		t.Fatalf("EVAL bucket key = %s", evalCall[3])
 	}
 	if evalCall[4] != "nm:app:app-a:route-group-buckets" {
@@ -297,6 +297,58 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 		if !stringArgsContainPair(evalCall, pair[0], pair[1]) {
 			t.Fatalf("EVAL args missing %s=%s: %#v", pair[0], pair[1], evalCall)
 		}
+	}
+}
+
+func TestRedisStoreAppBucketKeyStaysAggregatedByRoute(t *testing.T) {
+	client := &fakeRedisClient{}
+	store := NewRedisStore(client)
+	first := model.RouteGroupMetric{
+		RouteGroup:   "/api/ping",
+		RequestCount: 30,
+		LatencySumMs: 300,
+		LatencyCount: 30,
+		AppID:        "1023",
+		ComponentID:  "gr1ea4bc",
+	}
+	second := model.RouteGroupMetric{
+		RouteGroup:   "/api/ping",
+		RequestCount: 40,
+		LatencySumMs: 400,
+		LatencyCount: 40,
+		AppID:        "1023",
+		ComponentID:  "gr707edd",
+	}
+
+	err := store.AddRouteGroupBucket(context.Background(), model.AggregateScope{
+		Kind: model.ScopeApp,
+		ID:   "1023",
+	}, model.Window5m, 1710000005, first)
+	if err != nil {
+		t.Fatalf("AddRouteGroupBucket(first) unexpected error: %v", err)
+	}
+	err = store.AddRouteGroupBucket(context.Background(), model.AggregateScope{
+		Kind: model.ScopeApp,
+		ID:   "1023",
+	}, model.Window5m, 1710000005, second)
+	if err != nil {
+		t.Fatalf("AddRouteGroupBucket(second) unexpected error: %v", err)
+	}
+
+	var bucketKeys []string
+	for _, call := range client.calls {
+		if len(call) > 3 && call[0] == "EVAL" {
+			bucketKeys = append(bucketKeys, call[3])
+		}
+	}
+	if len(bucketKeys) != 2 {
+		t.Fatalf("bucket key writes = %#v; want two app-scope writes", bucketKeys)
+	}
+	if bucketKeys[0] != bucketKeys[1] {
+		t.Fatalf("bucket keys = %#v; want same app route bucket to preserve app-level aggregation", bucketKeys)
+	}
+	if strings.Contains(bucketKeys[0], ":component:") {
+		t.Fatalf("bucket key = %s; app-level key must not include component dimension", bucketKeys[0])
 	}
 }
 

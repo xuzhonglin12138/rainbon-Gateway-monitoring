@@ -850,13 +850,11 @@ func (s *RedisStore) aggregateComponentMetricsForAppAt(ctx context.Context, appI
 		return nil, err
 	}
 
-	// App-scope buckets used to be keyed only by bucket+route. In that shape,
-	// multiple components hitting the same route in the same bucket collapse
-	// into one hash and only one component_id survives. Component scopes keep
-	// the real component dimension, so prefer them whenever they provide a
-	// more complete view. New app-scope buckets also include component_id in
-	// the key and will match component-scope cardinality.
-	if len(componentScopeMetrics) > len(metrics) {
+	// App-scope buckets are intentionally aggregated by bucket+route for app
+	// overview and route rankings. That aggregation cannot preserve component
+	// identity when multiple components hit the same route in one bucket, so
+	// component summaries must prefer component-scope buckets whenever present.
+	if len(componentScopeMetrics) > 0 {
 		return componentScopeMetrics, nil
 	}
 	if len(metrics) > 0 {
@@ -1284,11 +1282,7 @@ func (s *RedisStore) ReplaceAppPrometheusRoutes(ctx context.Context, appID strin
 }
 
 func routeGroupBucketKey(scope model.AggregateScope, window model.Window, metric model.RouteGroupMetric, bucketUnix int64) string {
-	routeKey := sanitizeKeyPart(metric.RouteGroup)
-	if scope.Kind == model.ScopeApp && metric.ComponentID != "" {
-		routeKey = fmt.Sprintf("%s:component:%s", routeKey, sanitizeKeyPart(metric.ComponentID))
-	}
-	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), routeGroupBucketStorageWindow(window), routeKey, bucketUnix)
+	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), routeGroupBucketStorageWindow(window), sanitizeKeyPart(metric.RouteGroup), bucketUnix)
 }
 
 func routeGroupBucketIndexKey(scope model.AggregateScope) string {

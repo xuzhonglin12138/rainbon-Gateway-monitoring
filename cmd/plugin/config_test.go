@@ -122,6 +122,94 @@ func TestGrafanaBaseURLFromEnvPrefersExactGrafanaConnectionInfo(t *testing.T) {
 	}
 }
 
+func TestRedisAddrFromEnvUsesExplicitValue(t *testing.T) {
+	unsetEnv(t, "REDIS_ADDR", "REDIS_ADDRESS", "REDIS_URL", "REDIS_HOST", "REDIS_PORT")
+	t.Setenv("NM_REDIS_ADDR", "redis.example.local:6379")
+	t.Setenv("REDIS_HOST", "10.43.3.10")
+	t.Setenv("REDIS_PORT", "6379")
+
+	if got := redisAddrFromEnv(); got != "redis.example.local:6379" {
+		t.Fatalf("redisAddrFromEnv() = %q", got)
+	}
+}
+
+func TestRedisAddrFromEnvUsesRedisURL(t *testing.T) {
+	unsetEnv(t, "NM_REDIS_ADDR", "REDIS_ADDR", "REDIS_ADDRESS", "REDIS_HOST", "REDIS_PORT")
+	t.Setenv("REDIS_URL", "redis://:secret@redis.rbd-system.svc:6379/0")
+
+	if got := redisAddrFromEnv(); got != "redis.rbd-system.svc:6379" {
+		t.Fatalf("redisAddrFromEnv() = %q", got)
+	}
+}
+
+func TestRedisAddrFromEnvUsesRainbondConnectionInfo(t *testing.T) {
+	unsetEnv(t, "NM_REDIS_ADDR", "REDIS_ADDR", "REDIS_ADDRESS", "REDIS_URL")
+	t.Setenv("GATEWAY_MONITORING_REDIS_HOST", "10.43.4.15")
+	t.Setenv("GATEWAY_MONITORING_REDIS_PORT", "6379")
+
+	if got := redisAddrFromEnv(); got != "10.43.4.15:6379" {
+		t.Fatalf("redisAddrFromEnv() = %q", got)
+	}
+}
+
+func TestRedisAddrFromEnvPrefersExactRedisConnectionInfo(t *testing.T) {
+	unsetEnv(t, "NM_REDIS_ADDR", "REDIS_ADDR", "REDIS_ADDRESS", "REDIS_URL")
+	t.Setenv("GATEWAY_MONITORING_REDIS_HOST", "10.43.4.15")
+	t.Setenv("GATEWAY_MONITORING_REDIS_PORT", "6379")
+	t.Setenv("REDIS_HOST", "10.43.4.20")
+	t.Setenv("REDIS_PORT", "6379")
+
+	if got := redisAddrFromEnv(); got != "10.43.4.20:6379" {
+		t.Fatalf("redisAddrFromEnv() = %q", got)
+	}
+}
+
+func TestRedisAddrFromEnvFallsBackToLocalDefault(t *testing.T) {
+	unsetEnv(t, "NM_REDIS_ADDR", "REDIS_ADDR", "REDIS_ADDRESS", "REDIS_URL", "REDIS_HOST", "REDIS_PORT", "GATEWAY_MONITORING_REDIS_HOST", "GATEWAY_MONITORING_REDIS_PORT")
+
+	if got := redisAddrFromEnv(); got != "127.0.0.1:6379" {
+		t.Fatalf("redisAddrFromEnv() = %q", got)
+	}
+}
+
+func TestPrometheusBaseURLFromEnvUsesExplicitValue(t *testing.T) {
+	unsetEnv(t, "PROMETHEUS_URL", "PROMETHEUS_BASE_URL", "PROMETHEUS_HOST", "PROMETHEUS_PORT")
+	t.Setenv("NM_PROMETHEUS_URL", "http://prometheus.example.local:9090/")
+	t.Setenv("PROMETHEUS_HOST", "10.43.5.10")
+	t.Setenv("PROMETHEUS_PORT", "9090")
+
+	if got := prometheusBaseURLFromEnv(); got != "http://prometheus.example.local:9090" {
+		t.Fatalf("prometheusBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestPrometheusBaseURLFromEnvUsesCommonURL(t *testing.T) {
+	unsetEnv(t, "NM_PROMETHEUS_URL", "PROMETHEUS_BASE_URL", "PROMETHEUS_HOST", "PROMETHEUS_PORT")
+	t.Setenv("PROMETHEUS_URL", "http://prometheus.rbd-system.svc:9090/")
+
+	if got := prometheusBaseURLFromEnv(); got != "http://prometheus.rbd-system.svc:9090" {
+		t.Fatalf("prometheusBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestPrometheusBaseURLFromEnvUsesRainbondConnectionInfo(t *testing.T) {
+	unsetEnv(t, "NM_PROMETHEUS_URL", "PROMETHEUS_URL", "PROMETHEUS_BASE_URL")
+	t.Setenv("RBD_MONITOR_PROMETHEUS_HOST", "10.43.5.15")
+	t.Setenv("RBD_MONITOR_PROMETHEUS_PORT", "9090")
+
+	if got := prometheusBaseURLFromEnv(); got != "http://10.43.5.15:9090" {
+		t.Fatalf("prometheusBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestPrometheusBaseURLFromEnvFallsBackToRainbondMonitor(t *testing.T) {
+	unsetEnv(t, "NM_PROMETHEUS_URL", "PROMETHEUS_URL", "PROMETHEUS_BASE_URL", "PROMETHEUS_HOST", "PROMETHEUS_PORT", "RBD_MONITOR_PROMETHEUS_HOST", "RBD_MONITOR_PROMETHEUS_PORT")
+
+	if got := prometheusBaseURLFromEnv(); got != "http://rbd-monitor.rbd-system.svc:9999" {
+		t.Fatalf("prometheusBaseURLFromEnv() = %q", got)
+	}
+}
+
 func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
 	for _, key := range keys {

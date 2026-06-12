@@ -76,12 +76,12 @@ make build-with-key
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `NM_REDIS_ADDR` | `127.0.0.1:6379` | Redis 地址 |
+| `NM_REDIS_ADDR` | `127.0.0.1:6379` | Redis 地址覆盖项；默认从 Rainbond 注入的 Redis 连接信息自动解析，配置后覆盖自动解析结果 |
 | `NM_REDIS_PASSWORD` | 空 | Redis 密码 |
 | `NM_REDIS_DB` | `0` | Redis DB |
 | `NM_REDIS_TIMEOUT_SECONDS` | `3` | Redis 操作超时 |
 | `NM_REDIS_TLS` | `false` | 是否使用 TLS 连接 Redis |
-| `NM_PROMETHEUS_URL` | `http://127.0.0.1:9999` | Prometheus API 地址 |
+| `NM_PROMETHEUS_URL` | `http://rbd-monitor.rbd-system.svc:9999` | Prometheus API 地址覆盖项；默认从通用 Prometheus 环境变量、Rainbond 连接信息或 Rainbond 平台 `rbd-monitor` 自动解析 |
 | `NM_PROMETHEUS_TIMEOUT_SECONDS` | `3` | Prometheus 查询超时 |
 | `NM_GRAFANA_BASE_URL` | 空 | Grafana 上游地址覆盖项；默认从 Rainbond 注入的 Grafana 连接信息自动解析，配置后覆盖自动解析结果 |
 | `NM_DEFAULT_SLA_TARGET` | `0.999` | 默认应用 SLA 目标值 |

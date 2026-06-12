@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -121,16 +122,20 @@ func main() {
 	// Start periodic re-check
 	checker.StartPeriodicCheck(ctx, time.Duration(RecheckInterval)*time.Minute)
 
+	redisAddr := redisAddrFromEnv()
+	logger.WithField("redis_addr", redisAddr).Info("resolved redis address")
 	redisClient := repository.NewRedisClient(repository.RedisClientConfig{
-		Addr:     envOrDefault("NM_REDIS_ADDR", "127.0.0.1:6379"),
+		Addr:     redisAddr,
 		Password: os.Getenv("NM_REDIS_PASSWORD"),
 		DB:       envInt("NM_REDIS_DB", 0),
 		Timeout:  time.Duration(envInt("NM_REDIS_TIMEOUT_SECONDS", 3)) * time.Second,
 		TLS:      envBool("NM_REDIS_TLS", false),
 	})
 	redisStore := repository.NewRedisStore(redisClient)
+	prometheusBaseURL := prometheusBaseURLFromEnv()
+	logger.WithField("prometheus_url", prometheusBaseURL).Info("resolved prometheus url")
 	prometheusClient := promclient.NewClient(promclient.Config{
-		BaseURL: envOrDefault("NM_PROMETHEUS_URL", "http://127.0.0.1:9999"),
+		BaseURL: prometheusBaseURL,
 		Timeout: time.Duration(envInt("NM_PROMETHEUS_TIMEOUT_SECONDS", 3)) * time.Second,
 	})
 	slaService := service.NewSLAService(service.SLAConfig{
@@ -326,6 +331,46 @@ func grafanaBaseURLFromEnv() string {
 	return ""
 }
 
+func prometheusBaseURLFromEnv() string {
+	if configured := strings.TrimSpace(os.Getenv("NM_PROMETHEUS_URL")); configured != "" {
+		return strings.TrimRight(configured, "/")
+	}
+	if uri := firstEnvValue("PROMETHEUS_URL", "PROMETHEUS_BASE_URL"); uri != "" {
+		return strings.TrimRight(uri, "/")
+	}
+	if uri := rainbondConnectionURL("PROMETHEUS", 9090); uri != "" {
+		return uri
+	}
+	return "http://rbd-monitor.rbd-system.svc:9999"
+}
+
+func redisAddrFromEnv() string {
+	if configured := strings.TrimSpace(os.Getenv("NM_REDIS_ADDR")); configured != "" {
+		return configured
+	}
+	if addr := redisAddrFromValue(firstEnvValue("REDIS_ADDR", "REDIS_ADDRESS", "REDIS_URL")); addr != "" {
+		return addr
+	}
+	if addr := rainbondConnectionHostPort("REDIS", 6379); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:6379"
+}
+
+func redisAddrFromValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	if !strings.Contains(value, "/") {
+		return value
+	}
+	return ""
+}
+
 func firstEnvValue(keys ...string) string {
 	for _, key := range keys {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
@@ -336,6 +381,14 @@ func firstEnvValue(keys ...string) string {
 }
 
 func rainbondConnectionURL(nameHint string, preferredPort int) string {
+	addr := rainbondConnectionHostPort(nameHint, preferredPort)
+	if addr == "" {
+		return ""
+	}
+	return "http://" + addr
+}
+
+func rainbondConnectionHostPort(nameHint string, preferredPort int) string {
 	hint := strings.ToUpper(strings.TrimSpace(nameHint))
 	type candidate struct {
 		prefix string
@@ -385,7 +438,7 @@ func rainbondConnectionURL(nameHint string, preferredPort int) string {
 		}
 		return candidates[i].score > candidates[j].score
 	})
-	return "http://" + candidates[0].host + ":" + candidates[0].port
+	return candidates[0].host + ":" + candidates[0].port
 }
 
 func httpLoggerModeFromEnv(logger *logrus.Logger) string {

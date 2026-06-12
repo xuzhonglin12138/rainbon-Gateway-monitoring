@@ -78,6 +78,50 @@ func TestCollectorURIFromEnvFallsBackToDefaultWithoutRainbondRuntimeEnv(t *testi
 	}
 }
 
+func TestGrafanaBaseURLFromEnvUsesExplicitValue(t *testing.T) {
+	unsetEnv(t, "GRAFANA_URL", "GRAFANA_BASE_URL", "GF_SERVER_ROOT_URL", "GRAFANA_HOST", "GRAFANA_PORT")
+	t.Setenv("NM_GRAFANA_BASE_URL", "http://grafana.example.local:3000")
+	t.Setenv("GRAFANA_HOST", "10.43.1.10")
+	t.Setenv("GRAFANA_PORT", "3000")
+
+	if got := grafanaBaseURLFromEnv(); got != "http://grafana.example.local:3000" {
+		t.Fatalf("grafanaBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestGrafanaBaseURLFromEnvUsesGrafanaURL(t *testing.T) {
+	unsetEnv(t, "NM_GRAFANA_BASE_URL", "GRAFANA_BASE_URL", "GF_SERVER_ROOT_URL", "GRAFANA_HOST", "GRAFANA_PORT")
+	t.Setenv("GRAFANA_URL", "http://grafana.rbd-system.svc:3000/")
+
+	if got := grafanaBaseURLFromEnv(); got != "http://grafana.rbd-system.svc:3000" {
+		t.Fatalf("grafanaBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestGrafanaBaseURLFromEnvUsesRainbondConnectionInfo(t *testing.T) {
+	unsetEnv(t, "NM_GRAFANA_BASE_URL", "GRAFANA_URL", "GRAFANA_BASE_URL", "GF_SERVER_ROOT_URL")
+	t.Setenv("GATEWAY_MONITORING_GRAFANA_HOST", "10.43.2.15")
+	t.Setenv("GATEWAY_MONITORING_GRAFANA_PORT", "3000")
+	t.Setenv("GATEWAY_MONITORING_GRAFANA_8080_HOST", "10.43.2.16")
+	t.Setenv("GATEWAY_MONITORING_GRAFANA_8080_PORT", "8080")
+
+	if got := grafanaBaseURLFromEnv(); got != "http://10.43.2.15:3000" {
+		t.Fatalf("grafanaBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestGrafanaBaseURLFromEnvPrefersExactGrafanaConnectionInfo(t *testing.T) {
+	unsetEnv(t, "NM_GRAFANA_BASE_URL", "GRAFANA_URL", "GRAFANA_BASE_URL", "GF_SERVER_ROOT_URL")
+	t.Setenv("GATEWAY_MONITORING_GRAFANA_HOST", "10.43.2.15")
+	t.Setenv("GATEWAY_MONITORING_GRAFANA_PORT", "3000")
+	t.Setenv("GRAFANA_HOST", "10.43.2.20")
+	t.Setenv("GRAFANA_PORT", "3000")
+
+	if got := grafanaBaseURLFromEnv(); got != "http://10.43.2.20:3000" {
+		t.Fatalf("grafanaBaseURLFromEnv() = %q", got)
+	}
+}
+
 func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
 	for _, key := range keys {

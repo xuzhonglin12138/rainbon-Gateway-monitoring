@@ -95,7 +95,7 @@ Grafana 组件
 | `regionName` | 由 `rainbond-ui` URL 参数提供，决定当前集群 |
 | `rainbond-gateway-monitoring` Go 后端 | 网关监测 API 与 Grafana Web 代理入口 |
 | `gateway-monitoring-grafana` 组件 | Grafana 服务，作为网关监测应用下的组件存在 |
-| `NM_GRAFANA_BASE_URL` | Go 后端访问 Grafana 组件的内部地址 |
+| Grafana 连接信息 | 由 Rainbond 组件依赖注入，Go 后端自动解析 Grafana 内部地址 |
 
 建议 Grafana 作为网关监测应用内的独立组件部署，而不是内嵌到 Go 二进制中。
 
@@ -139,7 +139,7 @@ DELETE /grafana/*
 Go 后端代理到：
 
 ```text
-{NM_GRAFANA_BASE_URL}/{grafana_path}
+{resolved_grafana_base_url}/{grafana_path}
 ```
 
 ### 4.2 请求/响应结构
@@ -205,13 +205,9 @@ Grafana 代理不定义 JSON 响应结构，必须完整转发 Grafana 的：
 
 Go 后端新增 `/grafana/*` 代理处理。
 
-建议环境变量：
+后端启动时优先读取 Rainbond 注入的 Grafana 组件连接信息，自动拼接 Grafana 上游地址。`NM_GRAFANA_BASE_URL` 仅作为覆盖项保留，用于特殊环境下手动指定上游地址。
 
-```text
-NM_GRAFANA_BASE_URL=http://gateway-monitoring-grafana.rbd-system.svc:3000
-```
-
-后端启动时读取并校验该地址。如果未配置：
+如果未解析到 Grafana 上游地址：
 
 - `/grafana/*` 返回 503。
 - 前端监控中心 tab 展示 Grafana 服务未配置提示。
@@ -244,10 +240,11 @@ GF_SERVER_SERVE_FROM_SUB_PATH=true
 - 文件：`cmd/plugin/config.go`
 - 文件：`cmd/plugin/main.go`
 - 实现内容：
-  - 新增 `NM_GRAFANA_BASE_URL` 配置读取。
+  - 新增 Grafana 连接信息自动解析。
+  - 保留 `NM_GRAFANA_BASE_URL` 作为特殊环境覆盖项。
   - 将 Grafana 地址传入 `server.Config`。
 - 验收标准：
-  - 未配置时服务可启动。
+  - 未解析到 Grafana 地址时服务可启动。
   - 配置非法 URL 时日志给出明确提示。
 
 #### Task 1.2: 新增后端 Grafana 代理路由

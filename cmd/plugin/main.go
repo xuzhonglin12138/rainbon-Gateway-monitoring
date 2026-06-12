@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -237,6 +238,11 @@ func main() {
 		}
 	}
 
+	grafanaBaseURL := grafanaBaseURLFromEnv()
+	if grafanaBaseURL != "" {
+		logger.WithField("grafana_base_url", grafanaBaseURL).Info("resolved grafana upstream")
+	}
+
 	// HTTP server
 	srv := server.New(server.Config{
 		Addr:             *addr,
@@ -251,7 +257,7 @@ func main() {
 		DefaultSLATarget: envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
 		HTTPLoggerSyncer: httpLoggerSyncer,
 		HTTPLoggerMode:   httpLoggerMode,
-		GrafanaBaseURL:   strings.TrimSpace(os.Getenv("NM_GRAFANA_BASE_URL")),
+		GrafanaBaseURL:   grafanaBaseURL,
 	})
 
 	go func() {
@@ -305,6 +311,81 @@ func collectorURIFromEnv() string {
 		return configured
 	}
 	return DefaultCollectorURI
+}
+
+func grafanaBaseURLFromEnv() string {
+	if configured := strings.TrimSpace(os.Getenv("NM_GRAFANA_BASE_URL")); configured != "" {
+		return configured
+	}
+	if uri := firstEnvValue("GRAFANA_URL", "GRAFANA_BASE_URL", "GF_SERVER_ROOT_URL"); uri != "" {
+		return strings.TrimRight(uri, "/")
+	}
+	if uri := rainbondConnectionURL("GRAFANA", 3000); uri != "" {
+		return uri
+	}
+	return ""
+}
+
+func firstEnvValue(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func rainbondConnectionURL(nameHint string, preferredPort int) string {
+	hint := strings.ToUpper(strings.TrimSpace(nameHint))
+	type candidate struct {
+		prefix string
+		host   string
+		port   string
+		score  int
+	}
+	candidates := make([]candidate, 0)
+
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !strings.HasSuffix(key, "_HOST") || strings.TrimSpace(value) == "" {
+			continue
+		}
+		prefix := strings.TrimSuffix(key, "_HOST")
+		port := strings.TrimSpace(os.Getenv(prefix + "_PORT"))
+		if port == "" {
+			continue
+		}
+		score := 0
+		upperPrefix := strings.ToUpper(prefix)
+		if upperPrefix == hint {
+			score += 100
+		}
+		if strings.Contains(upperPrefix, hint) {
+			score += 50
+		}
+		if preferredPort > 0 && port == strconv.Itoa(preferredPort) {
+			score += 10
+		}
+		if score == 0 {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			prefix: prefix,
+			host:   strings.TrimSpace(value),
+			port:   port,
+			score:  score,
+		})
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			return candidates[i].prefix < candidates[j].prefix
+		}
+		return candidates[i].score > candidates[j].score
+	})
+	return "http://" + candidates[0].host + ":" + candidates[0].port
 }
 
 func httpLoggerModeFromEnv(logger *logrus.Logger) string {

@@ -86,7 +86,7 @@ func (s *RedisStore) AddRouteGroupBucket(ctx context.Context, scope model.Aggreg
 	if _, err := s.client.Do(ctx, "SADD", scopeRegistryKey, scope.RedisPart()); err != nil {
 		return err
 	}
-	key := routeGroupBucketKey(scope, window, metric.RouteGroup, bucketUnix)
+	key := routeGroupBucketKey(scope, window, metric, bucketUnix)
 	indexKey := routeGroupBucketIndexKey(scope)
 	updates := []struct {
 		field string
@@ -845,29 +845,53 @@ func (s *RedisStore) aggregateComponentMetricsForAppAt(ctx context.Context, appI
 	if err != nil {
 		return nil, err
 	}
-	if len(metrics) > 0 {
-		return metrics, nil
-	}
-	scopes, err := s.appScopes(ctx, appID)
+	componentScopeMetrics, err := s.aggregateComponentMetricsFromRegisteredScopesForAppAt(ctx, appID, window, endTime)
 	if err != nil {
 		return nil, err
 	}
-	metrics = make(map[string]model.RouteGroupMetric)
-	for _, scope := range scopes {
+
+	// App-scope buckets used to be keyed only by bucket+route. In that shape,
+	// multiple components hitting the same route in the same bucket collapse
+	// into one hash and only one component_id survives. Component scopes keep
+	// the real component dimension, so prefer them whenever they provide a
+	// more complete view. New app-scope buckets also include component_id in
+	// the key and will match component-scope cardinality.
+	if len(componentScopeMetrics) > len(metrics) {
+		return componentScopeMetrics, nil
+	}
+	if len(metrics) > 0 {
+		return metrics, nil
+	}
+	return componentScopeMetrics, nil
+}
+
+func (s *RedisStore) aggregateComponentMetricsFromRegisteredScopesForAppAt(ctx context.Context, appID string, window model.Window, endTime time.Time) (map[string]model.RouteGroupMetric, error) {
+	scopesValue, err := s.client.Do(ctx, "SMEMBERS", scopeRegistryKey)
+	if err != nil {
+		return nil, err
+	}
+	metrics := make(map[string]model.RouteGroupMetric)
+	for _, scopePart := range stringSlice(scopesValue) {
+		scope := scopeFromRedisPart(scopePart)
+		if scope.Kind != model.ScopeComponent || scope.ID == "" {
+			continue
+		}
 		scopeMetrics, err := s.aggregateComponentMetricsAt(ctx, scope, window, endTime)
 		if err != nil {
 			return nil, err
 		}
 		for componentID, metric := range scopeMetrics {
+			metricAppID, err := s.canonicalAppID(ctx, metric)
+			if err != nil {
+				return nil, err
+			}
+			if metricAppID != appID {
+				continue
+			}
 			current := metrics[componentID]
+			mergeRouteGroupMetric(&current, metric)
 			current.ComponentID = componentID
 			current.ServiceAlias = firstNonEmpty(current.ServiceAlias, metric.ServiceAlias)
-			current.RequestCount += metric.RequestCount
-			current.ErrorCount += metric.ErrorCount
-			current.UpstreamErrorCount += metric.UpstreamErrorCount
-			current.LatencySumMs += metric.LatencySumMs
-			current.LatencyCount += metric.LatencyCount
-			current.EgressBytes += metric.EgressBytes
 			current.TeamID = firstNonEmpty(current.TeamID, metric.TeamID)
 			current.AppID = firstNonEmpty(current.AppID, appID, metric.AppID)
 			current.TeamName = firstNonEmpty(current.TeamName, metric.TeamName)
@@ -1259,8 +1283,12 @@ func (s *RedisStore) ReplaceAppPrometheusRoutes(ctx context.Context, appID strin
 	return err
 }
 
-func routeGroupBucketKey(scope model.AggregateScope, window model.Window, routeGroup string, bucketUnix int64) string {
-	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), routeGroupBucketStorageWindow(window), sanitizeKeyPart(routeGroup), bucketUnix)
+func routeGroupBucketKey(scope model.AggregateScope, window model.Window, metric model.RouteGroupMetric, bucketUnix int64) string {
+	routeKey := sanitizeKeyPart(metric.RouteGroup)
+	if scope.Kind == model.ScopeApp && metric.ComponentID != "" {
+		routeKey = fmt.Sprintf("%s:component:%s", routeKey, sanitizeKeyPart(metric.ComponentID))
+	}
+	return fmt.Sprintf("nm:%s:%s:route-group:%s:bucket:%d", scope.RedisPart(), routeGroupBucketStorageWindow(window), routeKey, bucketUnix)
 }
 
 func routeGroupBucketIndexKey(scope model.AggregateScope) string {

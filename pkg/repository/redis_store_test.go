@@ -278,7 +278,7 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 	if evalCall[2] != "2" {
 		t.Fatalf("EVAL key count = %s; want 2", evalCall[2])
 	}
-	if evalCall[3] != "nm:app:app-a:5m:route-group:/api/order/detail/*:bucket:1710000005" {
+	if evalCall[3] != "nm:app:app-a:5m:route-group:/api/order/detail/*:component:svc-a:bucket:1710000005" {
 		t.Fatalf("EVAL bucket key = %s", evalCall[3])
 	}
 	if evalCall[4] != "nm:app:app-a:route-group-buckets" {
@@ -292,6 +292,7 @@ func TestRedisStoreAddRouteGroupBucketUsesHotBucketTTL(t *testing.T) {
 		{"egress_bytes", "4096"},
 		{"route_group", "/api/order/detail/*"},
 		{"app_id", "app-a"},
+		{"component_id", "svc-a"},
 	} {
 		if !stringArgsContainPair(evalCall, pair[0], pair[1]) {
 			t.Fatalf("EVAL args missing %s=%s: %#v", pair[0], pair[1], evalCall)
@@ -463,6 +464,76 @@ func TestRedisStoreListsAppComponentSummariesFromHotBuckets(t *testing.T) {
 	}
 	if len(client.batchCalls) == 0 {
 		t.Fatalf("expected bucket HGETALL commands to be pipelined, got calls %#v", client.calls)
+	}
+}
+
+func TestRedisStoreAppComponentSummariesUseComponentScopesWhenAppBucketMergesSameRoute(t *testing.T) {
+	client := &fakeRedisClient{
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:1023:route-group-buckets": {
+				"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005",
+			},
+			"nm:component:gr1ea4bc:route-group-buckets": {
+				"nm:component:gr1ea4bc:5m:route-group:_api_ping:bucket:1710000005",
+			},
+			"nm:component:gr707edd:route-group-buckets": {
+				"nm:component:gr707edd:5m:route-group:_api_ping:bucket:1710000005",
+			},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:1023:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "70",
+				"latency_count", "70",
+				"latency_sum_ms", "700",
+				"app_id", "1023",
+				"component_id", "gr1ea4bc",
+				"service_alias", "gr1ea4bc",
+			},
+			"nm:component:gr1ea4bc:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "30",
+				"latency_count", "30",
+				"latency_sum_ms", "300",
+				"app_id", "1023",
+				"component_id", "gr1ea4bc",
+				"service_alias", "gr1ea4bc",
+			},
+			"nm:component:gr707edd:5m:route-group:_api_ping:bucket:1710000005": {
+				"route_group", "/api/ping",
+				"request_count", "40",
+				"latency_count", "40",
+				"latency_sum_ms", "400",
+				"app_id", "1023",
+				"component_id", "gr707edd",
+				"service_alias", "gr707edd",
+			},
+		},
+		sets: map[string]interface{}{
+			scopeRegistryKey: []interface{}{
+				"component:gr1ea4bc",
+				"component:gr707edd",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+	store.now = func() time.Time {
+		return time.Unix(1710000010, 0)
+	}
+
+	items, err := store.ListAppComponentSummaries(context.Background(), "1023", model.Window5m, 50)
+	if err != nil {
+		t.Fatalf("ListAppComponentSummaries() unexpected error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items length = %d; want summaries for both components", len(items))
+	}
+	countByComponent := map[string]int64{}
+	for _, item := range items {
+		countByComponent[item.ComponentID] = item.RequestCount
+	}
+	if countByComponent["gr1ea4bc"] != 30 || countByComponent["gr707edd"] != 40 {
+		t.Fatalf("component counts = %#v; want gr1ea4bc=30 and gr707edd=40", countByComponent)
 	}
 }
 

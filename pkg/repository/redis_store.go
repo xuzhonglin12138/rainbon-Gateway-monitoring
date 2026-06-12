@@ -14,6 +14,7 @@ import (
 
 const bucketTTLSeconds = 35 * 60
 const snapshotTTLSeconds = 120
+const slaHealthTTLSeconds = 31 * 24 * 60 * 60
 const redisBatchHGETALLLimit = 512
 const scopeRegistryKey = "nm:route-group:scopes"
 const addRouteGroupBucketScript = `
@@ -987,11 +988,19 @@ func (s *RedisStore) SaveSLAConfig(ctx context.Context, cfg model.SLAConfig) err
 	if cfg.AppID == "" {
 		return fmt.Errorf("app_id is required")
 	}
+	cfg = normalizeSLAHealthConfig(cfg, s.now())
 	payload, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	_, err = s.client.Do(ctx, "SET", slaConfigKey(cfg.AppID), string(payload))
+	if _, err = s.client.Do(ctx, "SET", slaConfigKey(cfg.AppID), string(payload)); err != nil {
+		return err
+	}
+	if cfg.Enabled && strings.TrimSpace(cfg.URL) != "" {
+		_, err = s.client.Do(ctx, "SADD", slaHealthAppsKey(), cfg.AppID)
+	} else {
+		_, err = s.client.Do(ctx, "SREM", slaHealthAppsKey(), cfg.AppID)
+	}
 	return err
 }
 
@@ -1002,16 +1011,133 @@ func (s *RedisStore) GetSLAConfig(ctx context.Context, appID string, defaultTarg
 	}
 	raw, ok := value.(string)
 	if !ok || raw == "" {
-		return model.SLAConfig{AppID: appID, Target: defaultTarget}, nil
+		return defaultSLAHealthConfig(appID, defaultTarget, s.now()), nil
 	}
 	var cfg model.SLAConfig
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return model.SLAConfig{}, err
 	}
+	cfg.AppID = firstNonEmpty(cfg.AppID, appID)
 	if cfg.Target <= 0 {
 		cfg.Target = defaultTarget
 	}
-	return cfg, nil
+	return normalizeSLAHealthConfig(cfg, s.now()), nil
+}
+
+func (s *RedisStore) DeleteSLAConfig(ctx context.Context, appID string) error {
+	if appID == "" {
+		return fmt.Errorf("app_id is required")
+	}
+	if _, err := s.client.Do(ctx, "DEL", slaConfigKey(appID)); err != nil {
+		return err
+	}
+	_, err := s.client.Do(ctx, "SREM", slaHealthAppsKey(), appID)
+	return err
+}
+
+func (s *RedisStore) ListSLAHealthConfigs(ctx context.Context) ([]model.SLAConfig, error) {
+	value, err := s.client.Do(ctx, "SMEMBERS", slaHealthAppsKey())
+	if err != nil {
+		return nil, err
+	}
+	appIDs := stringSlice(value)
+	configs := make([]model.SLAConfig, 0, len(appIDs))
+	for _, appID := range appIDs {
+		cfg, err := s.GetSLAConfig(ctx, appID, 0.99)
+		if err != nil {
+			return nil, err
+		}
+		if cfg.Enabled && strings.TrimSpace(cfg.URL) != "" {
+			configs = append(configs, cfg)
+		}
+	}
+	return configs, nil
+}
+
+func (s *RedisStore) RecordSLAHealthCheck(ctx context.Context, sample model.SLAHealthSample) error {
+	if sample.AppID == "" {
+		return fmt.Errorf("app_id is required")
+	}
+	if sample.CheckedAt <= 0 {
+		sample.CheckedAt = s.now().Unix()
+	}
+	minute := sample.CheckedAt - sample.CheckedAt%60
+	bucketKey := slaHealthBucketKey(sample.AppID, minute)
+	indexKey := slaHealthIndexKey(sample.AppID)
+	successCount := "0"
+	failureCount := "0"
+	if sample.Success {
+		successCount = "1"
+	} else {
+		failureCount = "1"
+	}
+	commands := [][]string{
+		{"ZADD", indexKey, strconv.FormatInt(minute, 10), strconv.FormatInt(minute, 10)},
+		{"EXPIRE", indexKey, strconv.Itoa(slaHealthTTLSeconds)},
+		{"HINCRBY", bucketKey, "success_count", successCount},
+		{"HINCRBY", bucketKey, "failure_count", failureCount},
+		{"HINCRBYFLOAT", bucketKey, "latency_sum_ms", strconv.FormatFloat(sample.LatencyMs, 'f', -1, 64)},
+		{"HSET", bucketKey,
+			"last_status_code", strconv.Itoa(sample.StatusCode),
+			"last_error_type", sample.ErrorType,
+			"last_checked_at", strconv.FormatInt(sample.CheckedAt, 10),
+		},
+		{"EXPIRE", bucketKey, strconv.Itoa(slaHealthTTLSeconds)},
+	}
+	if !sample.Success {
+		payload, err := json.Marshal(sample)
+		if err != nil {
+			return err
+		}
+		recentKey := slaHealthRecentFailuresKey(sample.AppID)
+		commands = append(commands,
+			[]string{"LPUSH", recentKey, string(payload)},
+			[]string{"LTRIM", recentKey, "0", "19"},
+			[]string{"EXPIRE", recentKey, strconv.Itoa(slaHealthTTLSeconds)},
+		)
+	}
+	if batch, ok := s.client.(BatchCommandClient); ok {
+		_, err := batch.DoBatch(ctx, commands...)
+		return err
+	}
+	for _, command := range commands {
+		if _, err := s.client.Do(ctx, command...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *RedisStore) GetSLAHealthAggregate(ctx context.Context, appID string, since, until time.Time) (model.SLAHealthAggregate, error) {
+	minMinute := since.Unix() - since.Unix()%60
+	maxMinute := until.Unix() - until.Unix()%60
+	value, err := s.client.Do(ctx, "ZRANGEBYSCORE", slaHealthIndexKey(appID), strconv.FormatInt(minMinute, 10), strconv.FormatInt(maxMinute, 10))
+	if err != nil {
+		return model.SLAHealthAggregate{}, err
+	}
+	minutes := stringSlice(value)
+	keys := make([]string, 0, len(minutes))
+	for _, minute := range minutes {
+		keys = append(keys, slaHealthBucketKey(appID, parseInt(minute)))
+	}
+	valuesByKey, err := s.hgetallMany(ctx, keys)
+	if err != nil {
+		return model.SLAHealthAggregate{}, err
+	}
+	var aggregate model.SLAHealthAggregate
+	for _, key := range keys {
+		bucket := slaHealthBucketFromHash(valuesByKey[key])
+		aggregate.SuccessChecks += bucket.SuccessChecks
+		aggregate.FailureChecks += bucket.FailureChecks
+		aggregate.LatencySumMs += bucket.LatencySumMs
+		if bucket.LastCheckedAt >= aggregate.LastCheckedAt {
+			aggregate.LastCheckedAt = bucket.LastCheckedAt
+			aggregate.LastStatusCode = bucket.LastStatusCode
+			aggregate.LastErrorType = bucket.LastErrorType
+		}
+	}
+	aggregate.TotalChecks = aggregate.SuccessChecks + aggregate.FailureChecks
+	return aggregate, nil
 }
 
 func (s *RedisStore) SaveRouteGroupRules(ctx context.Context, appID string, rules []model.RouteGroupRule) error {
@@ -1164,6 +1290,22 @@ func slaConfigKey(appID string) string {
 	return "nm:app:" + sanitizeKeyPart(appID) + ":sla-config"
 }
 
+func slaHealthAppsKey() string {
+	return "nm:sla-health:apps"
+}
+
+func slaHealthIndexKey(appID string) string {
+	return "nm:app:" + sanitizeKeyPart(appID) + ":sla-health:index"
+}
+
+func slaHealthBucketKey(appID string, unixMinute int64) string {
+	return fmt.Sprintf("nm:app:%s:sla-health:bucket:%d", sanitizeKeyPart(appID), unixMinute)
+}
+
+func slaHealthRecentFailuresKey(appID string) string {
+	return "nm:app:" + sanitizeKeyPart(appID) + ":sla-health:recent-failures"
+}
+
 func routeGroupRulesKey(appID string) string {
 	return "nm:app:" + sanitizeKeyPart(appID) + ":route-group-rules"
 }
@@ -1229,6 +1371,61 @@ func metricFromHash(value interface{}) model.RouteGroupMetric {
 		ComponentID:        fields["component_id"],
 		ServiceAlias:       fields["service_alias"],
 	}
+}
+
+func slaHealthBucketFromHash(value interface{}) model.SLAHealthAggregate {
+	values, ok := value.([]interface{})
+	if !ok {
+		return model.SLAHealthAggregate{}
+	}
+	fields := make(map[string]string)
+	for i := 0; i+1 < len(values); i += 2 {
+		key, _ := values[i].(string)
+		val, _ := values[i+1].(string)
+		fields[key] = val
+	}
+	return model.SLAHealthAggregate{
+		SuccessChecks:  parseInt(fields["success_count"]),
+		FailureChecks:  parseInt(fields["failure_count"]),
+		LatencySumMs:   parseFloat(fields["latency_sum_ms"]),
+		LastStatusCode: int(parseInt(fields["last_status_code"])),
+		LastErrorType:  fields["last_error_type"],
+		LastCheckedAt:  parseInt(fields["last_checked_at"]),
+	}
+}
+
+func defaultSLAHealthConfig(appID string, target float64, now time.Time) model.SLAConfig {
+	if target <= 0 {
+		target = 0.99
+	}
+	return normalizeSLAHealthConfig(model.SLAConfig{
+		AppID:  appID,
+		Target: target,
+	}, now)
+}
+
+func normalizeSLAHealthConfig(cfg model.SLAConfig, now time.Time) model.SLAConfig {
+	cfg.URL = strings.TrimSpace(cfg.URL)
+	if cfg.Target <= 0 {
+		cfg.Target = 0.99
+	}
+	if cfg.IntervalSeconds <= 0 {
+		cfg.IntervalSeconds = 10
+	}
+	if cfg.TimeoutSeconds <= 0 {
+		cfg.TimeoutSeconds = 3
+	}
+	if cfg.SuccessStatusMin <= 0 {
+		cfg.SuccessStatusMin = 200
+	}
+	if cfg.SuccessStatusMax <= 0 {
+		cfg.SuccessStatusMax = 399
+	}
+	if cfg.UpdatedAt <= 0 {
+		cfg.UpdatedAt = now.Unix()
+	}
+	cfg.Enabled = cfg.Enabled && cfg.URL != ""
+	return cfg
 }
 
 func parseInt(value string) int64 {

@@ -33,6 +33,11 @@ func (f *fakeConfigStore) SaveSLAConfig(_ context.Context, cfg model.SLAConfig) 
 	return nil
 }
 
+func (f *fakeConfigStore) DeleteSLAConfig(_ context.Context, appID string) error {
+	f.slaConfig = model.SLAConfig{AppID: appID}
+	return nil
+}
+
 func (f *fakeConfigStore) GetRouteGroupRules(_ context.Context, _ string) ([]model.RouteGroupRule, error) {
 	return f.rules, nil
 }
@@ -233,17 +238,20 @@ func TestServerStaticJSRequiresLicenseByDefault(t *testing.T) {
 
 func TestServerHandlesAppSLAConfig(t *testing.T) {
 	store := &fakeConfigStore{}
-	server := New(Config{ConfigStore: store, DefaultSLATarget: 0.999})
+	server := New(Config{ConfigStore: store, DefaultSLATarget: 0.99})
 
-	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/apps/app-a/sla/config", strings.NewReader(`{"target":0.995}`))
+	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/apps/app-a/sla/config", strings.NewReader(`{"url":"https://example.com/healthz"}`))
 	putReq.Header.Set("Content-Type", "application/json")
 	putResp := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(putResp, putReq)
 	if putResp.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body = %s; want 200", putResp.Code, putResp.Body.String())
 	}
-	if store.slaConfig.AppID != "app-a" || store.slaConfig.Target != 0.995 {
+	if store.slaConfig.AppID != "app-a" || store.slaConfig.URL != "https://example.com/healthz" || !store.slaConfig.Enabled {
 		t.Fatalf("stored sla config = %#v", store.slaConfig)
+	}
+	if store.slaConfig.Target != 0.99 || store.slaConfig.IntervalSeconds != 10 || store.slaConfig.TimeoutSeconds != 3 {
+		t.Fatalf("stored fixed sla config = %#v", store.slaConfig)
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/apps/app-a/sla/config", nil)
@@ -258,8 +266,18 @@ func TestServerHandlesAppSLAConfig(t *testing.T) {
 	if err := json.Unmarshal(getResp.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Data.AppID != "app-a" || body.Data.Target != 0.995 {
+	if body.Data.AppID != "app-a" || body.Data.URL != "https://example.com/healthz" || !body.Data.Enabled {
 		t.Fatalf("response data = %#v", body.Data)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/apps/app-a/sla/config", nil)
+	deleteResp := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d body = %s; want 200", deleteResp.Code, deleteResp.Body.String())
+	}
+	if store.slaConfig.Enabled || store.slaConfig.URL != "" {
+		t.Fatalf("deleted config = %#v; want disabled empty config", store.slaConfig)
 	}
 }
 

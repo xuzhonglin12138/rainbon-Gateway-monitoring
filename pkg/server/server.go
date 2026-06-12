@@ -117,6 +117,7 @@ type OverviewAtService interface {
 type ConfigStore interface {
 	GetSLAConfig(ctx context.Context, appID string, defaultTarget float64) (model.SLAConfig, error)
 	SaveSLAConfig(ctx context.Context, cfg model.SLAConfig) error
+	DeleteSLAConfig(ctx context.Context, appID string) error
 	GetRouteGroupRules(ctx context.Context, appID string) ([]model.RouteGroupRule, error)
 	SaveRouteGroupRules(ctx context.Context, appID string, rules []model.RouteGroupRule) error
 }
@@ -146,7 +147,7 @@ func New(cfg Config) *Server {
 		cfg.Logger = logrus.New()
 	}
 	if cfg.DefaultSLATarget <= 0 {
-		cfg.DefaultSLATarget = 0.999
+		cfg.DefaultSLATarget = 0.99
 	}
 	cfg.HTTPLoggerMode = normalizeHTTPLoggerMode(cfg.HTTPLoggerMode)
 
@@ -693,12 +694,27 @@ func (s *Server) handleAppSLAConfig(w http.ResponseWriter, r *http.Request, appI
 			return
 		}
 		payload.AppID = appID
-		if payload.Target <= 0 || payload.Target > 1 {
+		payload.URL = strings.TrimSpace(payload.URL)
+		if err := service.ValidateSLAHealthURL(payload.URL); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		if payload.Target <= 0 {
+			payload.Target = 0.99
+		}
+		if payload.Target > 1 {
 			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "target must be in (0,1]"})
 			return
 		}
+		payload.Enabled = true
+		payload.IntervalSeconds = 10
+		payload.TimeoutSeconds = 3
+		payload.SuccessStatusMin = 200
+		payload.SuccessStatusMax = 399
+		payload.UpdatedAt = time.Now().Unix()
 		s.logger.WithFields(logrus.Fields{
 			"app_id": appID,
+			"url":    payload.URL,
 			"target": payload.Target,
 		}).Info("saving app sla config")
 		if err := s.configStore.SaveSLAConfig(r.Context(), payload); err != nil {
@@ -710,6 +726,16 @@ func (s *Server) handleAppSLAConfig(w http.ResponseWriter, r *http.Request, appI
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"data": payload})
+	case http.MethodDelete:
+		s.logger.WithField("app_id", appID).Info("deleting app sla config")
+		if err := s.configStore.DeleteSLAConfig(r.Context(), appID); err != nil {
+			s.logger.WithError(err).WithField("app_id", appID).Warn("delete sla config failed")
+			http.Error(w, "delete sla config failed", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"data": model.SLAConfig{AppID: appID, Target: s.defaultSLATarget},
+		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

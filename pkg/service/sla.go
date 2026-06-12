@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -28,6 +27,10 @@ type SLAStore interface {
 	GetAppPrometheusRoutes(ctx context.Context, appID string) ([]string, error)
 }
 
+type SLAHealthAggregateStore interface {
+	GetSLAHealthAggregate(ctx context.Context, appID string, since, until time.Time) (model.SLAHealthAggregate, error)
+}
+
 type SLABucketStore interface {
 	ListRouteGroupBucketPoints(ctx context.Context, scope model.AggregateScope, window model.Window) ([]model.RouteGroupBucketPoint, error)
 }
@@ -39,6 +42,7 @@ type SLABucketAtStore interface {
 type SLAService struct {
 	prometheus  PrometheusScalarClient
 	store       SLAStore
+	healthStore SLAHealthAggregateStore
 	bucketStore SLABucketStore
 	target      float64
 	logger      *logrus.Logger
@@ -49,6 +53,9 @@ func NewSLAService(cfg SLAConfig) *SLAService {
 		cfg.Target = 0.999
 	}
 	service := &SLAService{prometheus: cfg.Prometheus, store: cfg.Store, target: cfg.Target, logger: cfg.Logger}
+	if healthStore, ok := cfg.Store.(SLAHealthAggregateStore); ok {
+		service.healthStore = healthStore
+	}
 	if bucketStore, ok := cfg.Store.(SLABucketStore); ok {
 		service.bucketStore = bucketStore
 	}
@@ -65,75 +72,94 @@ func (s *SLAService) GetAppSLAAt(ctx context.Context, appID string, window model
 
 func (s *SLAService) getAppSLA(ctx context.Context, appID string, window model.Window, endTime time.Time) (model.SLAStatus, error) {
 	target := s.target
-	routeMatcher := regexp.QuoteMeta(appID) + ".*"
+	cfg := model.SLAConfig{AppID: appID, Target: target}
 	if s.store != nil {
-		cfg, err := s.store.GetSLAConfig(ctx, appID, s.target)
+		stored, err := s.store.GetSLAConfig(ctx, appID, s.target)
 		if err != nil {
 			return model.SLAStatus{}, err
 		}
+		cfg = stored
 		target = cfg.Target
 	}
+	if cfg.Target <= 0 {
+		cfg.Target = target
+	}
+	return s.getAppSLAFromHealthChecks(ctx, appID, window, endTime, cfg)
+}
 
-	if status, ok, err := s.getAppSLAFromBucketsAt(ctx, appID, window, endTime, target); err != nil {
-		return model.SLAStatus{}, err
-	} else if ok {
+func (s *SLAService) getAppSLAFromHealthChecks(ctx context.Context, appID string, window model.Window, endTime time.Time, cfg model.SLAConfig) (model.SLAStatus, error) {
+	status := baseHealthSLAStatus(appID, window, cfg)
+	if !cfg.Enabled || strings.TrimSpace(cfg.URL) == "" {
 		return status, nil
 	}
-
-	if s.prometheus == nil {
-		return model.SLAStatus{}, fmt.Errorf("prometheus client is required")
+	if s.healthStore == nil {
+		return status, nil
 	}
-
-	if s.store != nil {
-		routes, err := s.store.GetAppPrometheusRoutes(ctx, appID)
-		if err != nil {
-			return model.SLAStatus{}, err
-		}
-		if len(routes) > 0 {
-			routeMatcher = prometheusRouteMatcher(routes)
-		}
-		if s.logger != nil {
-			s.logger.WithFields(logrus.Fields{
-				"app_id":        appID,
-				"window":        window,
-				"route_count":   len(routes),
-				"routes":        strings.Join(routes, ","),
-				"route_matcher": routeMatcher,
-				"target":        target,
-			}).Info("resolved app sla route matcher")
-		}
-	} else if s.logger != nil {
-		s.logger.WithFields(logrus.Fields{
-			"app_id":        appID,
-			"window":        window,
-			"route_matcher": routeMatcher,
-			"target":        target,
-		}).Info("using fallback app sla route matcher because store is nil")
+	until := endTime
+	if until.IsZero() {
+		until = time.Now()
 	}
-	routeMatcherLiteral := prometheusStringLiteralValue(routeMatcher)
-	totalQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s"}[%s]))`, routeMatcherLiteral, window)
-	errorQuery := fmt.Sprintf(`sum(increase(apisix_http_status{route=~"%s",code=~"5.."}[%s]))`, routeMatcherLiteral, window)
+	since := until.Add(-30 * 24 * time.Hour)
+	aggregate, err := s.healthStore.GetSLAHealthAggregate(ctx, appID, since, until)
+	if err != nil {
+		return model.SLAStatus{}, err
+	}
+	status.TotalChecks = aggregate.TotalChecks
+	status.SuccessChecks = aggregate.SuccessChecks
+	status.FailureChecks = aggregate.FailureChecks
+	status.LastCheckedAt = aggregate.LastCheckedAt
+	status.LastStatusCode = aggregate.LastStatusCode
+	status.LastErrorType = aggregate.LastErrorType
+	if aggregate.TotalChecks > 0 {
+		status.Current = float64(aggregate.SuccessChecks) / float64(aggregate.TotalChecks)
+		status.MeetingTarget = status.Current >= status.Target
+		status.AvgLatencyMs = aggregate.LatencySumMs / float64(aggregate.TotalChecks)
+	}
 	if s.logger != nil {
 		s.logger.WithFields(logrus.Fields{
-			"app_id":      appID,
-			"window":      window,
-			"total_query": totalQuery,
-			"error_query": errorQuery,
-		}).Debug("querying app sla prometheus metrics")
+			"app_id":         appID,
+			"configured":     status.Configured,
+			"total_checks":   status.TotalChecks,
+			"success_checks": status.SuccessChecks,
+			"failure_checks": status.FailureChecks,
+			"target":         status.Target,
+		}).Debug("computed app sla from health checks")
 	}
+	return status, nil
+}
 
-	total, err := s.prometheus.QueryScalar(ctx, totalQuery)
-	if err != nil {
-		return model.SLAStatus{}, err
+func baseHealthSLAStatus(appID string, window model.Window, cfg model.SLAConfig) model.SLAStatus {
+	target := cfg.Target
+	if target <= 0 {
+		target = 0.99
 	}
-	errors, err := s.prometheus.QueryScalar(ctx, errorQuery)
-	if err != nil {
-		return model.SLAStatus{}, err
+	if cfg.IntervalSeconds <= 0 {
+		cfg.IntervalSeconds = 10
 	}
-	total = math.Round(total)
-	errors = math.Round(errors)
-
-	return slaStatusFromCounts(appID, window, target, total, errors, "B", "apisix_http_status"), nil
+	if cfg.TimeoutSeconds <= 0 {
+		cfg.TimeoutSeconds = 3
+	}
+	if cfg.SuccessStatusMin <= 0 {
+		cfg.SuccessStatusMin = 200
+	}
+	if cfg.SuccessStatusMax <= 0 {
+		cfg.SuccessStatusMax = 399
+	}
+	current := 1.0
+	return model.SLAStatus{
+		AppID:                 appID,
+		Window:                window,
+		HealthWindow:          "30d",
+		Configured:            cfg.Enabled && strings.TrimSpace(cfg.URL) != "",
+		Current:               current,
+		Target:                target,
+		MeetingTarget:         current >= target,
+		IntervalSeconds:       cfg.IntervalSeconds,
+		TimeoutSeconds:        cfg.TimeoutSeconds,
+		SuccessStatusRange:    fmt.Sprintf("%d-%d", cfg.SuccessStatusMin, cfg.SuccessStatusMax),
+		EvidenceLevel:         "A",
+		PrometheusQuerySource: "sla_health_check",
+	}
 }
 
 func (s *SLAService) getAppSLAFromBuckets(ctx context.Context, appID string, window model.Window, target float64) (model.SLAStatus, bool, error) {

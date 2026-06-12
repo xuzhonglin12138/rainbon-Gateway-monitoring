@@ -142,9 +142,11 @@ func main() {
 	slaService := service.NewSLAService(service.SLAConfig{
 		Prometheus: prometheusClient,
 		Store:      redisStore,
-		Target:     envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
+		Target:     envFloat("NM_DEFAULT_SLA_TARGET", 0.99),
 		Logger:     logger,
 	})
+	slaHealthChecker := service.NewSLAHealthChecker(redisStore, logger)
+	slaHealthChecker.Start(ctx)
 	overviewService := service.NewOverviewService(service.OverviewConfig{
 		Prometheus:   prometheusClient,
 		Store:        redisStore,
@@ -260,7 +262,7 @@ func main() {
 		SLAService:       slaService,
 		OverviewService:  overviewService,
 		ConfigStore:      redisStore,
-		DefaultSLATarget: envFloat("NM_DEFAULT_SLA_TARGET", 0.999),
+		DefaultSLATarget: envFloat("NM_DEFAULT_SLA_TARGET", 0.99),
 		HTTPLoggerSyncer: httpLoggerSyncer,
 		HTTPLoggerMode:   httpLoggerMode,
 		GrafanaBaseURL:   grafanaBaseURL,

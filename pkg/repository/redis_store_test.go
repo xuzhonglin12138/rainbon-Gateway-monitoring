@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,8 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 		}
 		f.sets[args[1]] = existing
 		return int64(1), nil
+	case "SREM":
+		return int64(1), nil
 	case "DEL":
 		if f.sets != nil {
 			delete(f.sets, args[1])
@@ -95,6 +98,116 @@ func (f *fakeRedisClient) Do(_ context.Context, args ...string) (interface{}, er
 		return int64(1), nil
 	default:
 		return int64(1), nil
+	}
+}
+
+func TestRedisStoreSaveSLAConfigRegistersEnabledHealthCheck(t *testing.T) {
+	client := &fakeRedisClient{}
+	store := NewRedisStore(client)
+	store.now = func() time.Time { return time.Unix(1710000000, 0) }
+
+	err := store.SaveSLAConfig(context.Background(), model.SLAConfig{
+		AppID:   "app-a",
+		Enabled: true,
+		URL:     "https://example.com/healthz",
+	})
+	if err != nil {
+		t.Fatalf("SaveSLAConfig() unexpected error: %v", err)
+	}
+
+	var sawRegister bool
+	raw, ok := client.sets["nm:app:app-a:sla-config"].(string)
+	if !ok || raw == "" {
+		t.Fatalf("saved config payload = %#v", client.sets["nm:app:app-a:sla-config"])
+	}
+	if !strings.Contains(raw, `"target":0.99`) || !strings.Contains(raw, `"interval_seconds":10`) {
+		t.Fatalf("saved config payload = %s; want fixed defaults", raw)
+	}
+	for _, call := range client.calls {
+		if len(call) == 3 && call[0] == "SADD" && call[1] == "nm:sla-health:apps" && call[2] == "app-a" {
+			sawRegister = true
+		}
+	}
+	if !sawRegister {
+		t.Fatalf("expected SLA app registration, calls=%#v", client.calls)
+	}
+}
+
+func TestRedisStoreRecordSLAHealthCheckUsesBatchAndRecentFailure(t *testing.T) {
+	client := &fakeRedisClient{}
+	store := NewRedisStore(client)
+
+	err := store.RecordSLAHealthCheck(context.Background(), model.SLAHealthSample{
+		AppID:      "app-a",
+		CheckedAt:  1710000061,
+		Success:    false,
+		StatusCode: 500,
+		LatencyMs:  25.5,
+		ErrorType:  "status_code_5xx",
+	})
+	if err != nil {
+		t.Fatalf("RecordSLAHealthCheck() unexpected error: %v", err)
+	}
+	if len(client.batchCalls) != 1 {
+		t.Fatalf("batchCalls = %#v; want one batch", client.batchCalls)
+	}
+	commands := client.batchCalls[0]
+	if len(commands) < 10 {
+		t.Fatalf("commands = %#v; want bucket and recent failure commands", commands)
+	}
+	if commands[0][0] != "ZADD" || commands[0][1] != "nm:app:app-a:sla-health:index" || commands[0][2] != "1710000060" {
+		t.Fatalf("first command = %#v; want ZADD minute index", commands[0])
+	}
+	var sawRecent bool
+	for _, command := range commands {
+		if len(command) >= 2 && command[0] == "LPUSH" && command[1] == "nm:app:app-a:sla-health:recent-failures" {
+			sawRecent = true
+		}
+	}
+	if !sawRecent {
+		t.Fatalf("commands = %#v; want recent failure write", commands)
+	}
+}
+
+func TestRedisStoreGetSLAHealthAggregateUsesTimeIndex(t *testing.T) {
+	client := &fakeRedisClient{
+		zrangeByKey: map[string][]interface{}{
+			"nm:app:app-a:sla-health:index": {"1710000000", "1710000060"},
+		},
+		hashByKey: map[string][]interface{}{
+			"nm:app:app-a:sla-health:bucket:1710000000": {
+				"success_count", "4",
+				"failure_count", "1",
+				"latency_sum_ms", "100",
+				"last_status_code", "200",
+				"last_checked_at", "1710000050",
+			},
+			"nm:app:app-a:sla-health:bucket:1710000060": {
+				"success_count", "5",
+				"failure_count", "0",
+				"latency_sum_ms", "150",
+				"last_status_code", "204",
+				"last_checked_at", "1710000068",
+			},
+		},
+	}
+	store := NewRedisStore(client)
+
+	aggregate, err := store.GetSLAHealthAggregate(context.Background(), "app-a", time.Unix(1710000000, 0), time.Unix(1710000090, 0))
+	if err != nil {
+		t.Fatalf("GetSLAHealthAggregate() unexpected error: %v", err)
+	}
+	if aggregate.TotalChecks != 10 || aggregate.SuccessChecks != 9 || aggregate.FailureChecks != 1 {
+		t.Fatalf("aggregate = %#v; want 9/10 success", aggregate)
+	}
+	if aggregate.LatencySumMs != 250 || aggregate.LastStatusCode != 204 || aggregate.LastCheckedAt != 1710000068 {
+		t.Fatalf("aggregate metadata = %#v", aggregate)
+	}
+	if countCommand(client.calls, "KEYS") != 0 {
+		t.Fatalf("calls = %#v; want no KEYS", client.calls)
+	}
+	if countCommand(client.calls, "ZRANGEBYSCORE") != 1 {
+		t.Fatalf("calls = %#v; want ZRANGEBYSCORE", client.calls)
 	}
 }
 
@@ -1105,7 +1218,7 @@ func TestRedisStoreSavesAndLoadsSLAConfig(t *testing.T) {
 	client := &fakeRedisClient{}
 	store := NewRedisStore(client)
 
-	err := store.SaveSLAConfig(context.Background(), model.SLAConfig{AppID: "app-a", Target: 0.995})
+	err := store.SaveSLAConfig(context.Background(), model.SLAConfig{AppID: "app-a", Enabled: true, URL: "https://example.com/healthz", Target: 0.995})
 	if err != nil {
 		t.Fatalf("SaveSLAConfig() unexpected error: %v", err)
 	}
@@ -1116,6 +1229,12 @@ func TestRedisStoreSavesAndLoadsSLAConfig(t *testing.T) {
 	}
 	if config.Target != 0.995 {
 		t.Fatalf("target = %v; want 0.995", config.Target)
+	}
+	if !config.Enabled || config.URL != "https://example.com/healthz" {
+		t.Fatalf("health config = %#v; want enabled URL", config)
+	}
+	if config.IntervalSeconds != 10 || config.TimeoutSeconds != 3 || config.SuccessStatusMin != 200 || config.SuccessStatusMax != 399 {
+		t.Fatalf("fixed health defaults = %#v", config)
 	}
 }
 
@@ -1128,6 +1247,12 @@ func TestRedisStoreReturnsDefaultSLAConfigWhenMissing(t *testing.T) {
 	}
 	if config.Target != 0.999 {
 		t.Fatalf("target = %v; want default 0.999", config.Target)
+	}
+	if config.Enabled || config.URL != "" {
+		t.Fatalf("default health config = %#v; want disabled empty URL", config)
+	}
+	if config.IntervalSeconds != 10 || config.TimeoutSeconds != 3 {
+		t.Fatalf("default timing = %#v; want fixed health defaults", config)
 	}
 }
 
